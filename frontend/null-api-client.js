@@ -999,6 +999,499 @@ export class NullApiClient {
     });
   }
 
+  // ------------------------------------------------------- endpoints (Phase 3)
+
+  /**
+   * One-time enrollment tokens in the current org. Requires `endpoints:read`.
+   * @returns {Promise<Array<object>>} EnrollmentTokenOut[].
+   */
+  async listEnrollmentTokens() {
+    return this.request('/api/v1/endpoints/enrollment-tokens');
+  }
+
+  /**
+   * Issue a one-time enrollment token. The raw token is in the response
+   * **once** — show it to the admin and never store it. Requires
+   * `endpoints:manage`.
+   * @param {number} [expiresInHours=24]
+   * @returns {Promise<object>} `{id, token, expires_at, ...}` (201).
+   */
+  async createEnrollmentToken(expiresInHours = 24) {
+    return this.request('/api/v1/endpoints/enrollment-tokens', {
+      method: 'POST',
+      body: { expires_in_hours: expiresInHours },
+    });
+  }
+
+  /**
+   * Revoke an unused enrollment token. Requires `endpoints:manage`.
+   * @param {string} tokenId
+   */
+  async revokeEnrollmentToken(tokenId) {
+    return this.request(`/api/v1/endpoints/enrollment-tokens/${encodeURIComponent(tokenId)}/revoke`, {
+      method: 'POST',
+    });
+  }
+
+  /**
+   * All endpoints in the current org. Requires `endpoints:read`.
+   * @returns {Promise<Array<object>>} EndpointOut[].
+   */
+  async listEndpoints() {
+    return this.request('/api/v1/endpoints');
+  }
+
+  /**
+   * One endpoint by id. Requires `endpoints:read`.
+   * @param {string} endpointId
+   * @returns {Promise<object>} EndpointOut.
+   */
+  async getEndpoint(endpointId) {
+    return this.request(`/api/v1/endpoints/${encodeURIComponent(endpointId)}`);
+  }
+
+  /**
+   * Update an endpoint (display name, assigned user, …). Requires
+   * `endpoints:modify`.
+   * @param {string} endpointId
+   * @param {object} patch
+   * @returns {Promise<object>} EndpointOut.
+   */
+  async updateEndpoint(endpointId, patch) {
+    return this.request(`/api/v1/endpoints/${encodeURIComponent(endpointId)}`, {
+      method: 'PATCH',
+      body: patch,
+    });
+  }
+
+  /**
+   * Revoke an endpoint's device credential. The agent gets 401 on every
+   * call thereafter. Requires `endpoints:manage`.
+   * @param {string} endpointId
+   */
+  async revokeEndpoint(endpointId) {
+    return this.request(`/api/v1/endpoints/${encodeURIComponent(endpointId)}/revoke`, {
+      method: 'POST',
+    });
+  }
+
+  /**
+   * Append-only inventory history for an endpoint. Requires `endpoints:read`.
+   * @param {string} endpointId
+   * @returns {Promise<Array<object>>}
+   */
+  async getEndpointInventory(endpointId) {
+    return this.request(`/api/v1/endpoints/${encodeURIComponent(endpointId)}/inventory`);
+  }
+
+  /**
+   * Job history for an endpoint. Requires `endpoints:read`.
+   * @param {string} endpointId
+   * @returns {Promise<Array<object>>}
+   */
+  async listEndpointJobs(endpointId) {
+    return this.request(`/api/v1/endpoints/${encodeURIComponent(endpointId)}/jobs`);
+  }
+
+  /**
+   * Issue a job to an endpoint (`patch_scan`, `patch_deploy`, `vuln_scan`,
+   * `inventory_refresh`). Requires `endpoints:manage` (plus the
+   * type-specific permission at issue time).
+   * @param {string} endpointId
+   * @param {{ type: string, payload?: object }} job
+   * @returns {Promise<object>} AgentJobOut (201).
+   */
+  async issueEndpointJob(endpointId, { type, payload = {} } = {}) {
+    return this.request(`/api/v1/endpoints/${encodeURIComponent(endpointId)}/jobs`, {
+      method: 'POST',
+      body: { type, payload },
+    });
+  }
+
+  /**
+   * Agent release catalog (global, not tenant data). Requires
+   * `endpoints:read`.
+   * @returns {Promise<Array<object>>}
+   */
+  async listAgentReleases() {
+    return this.request('/api/v1/endpoints/releases');
+  }
+
+  // -------------------------------------------------------- patching (Phase 3)
+
+  /**
+   * Patch catalog for the current org. Requires `patching:read`.
+   * @returns {Promise<Array<object>>}
+   */
+  async listPatches() {
+    return this.request('/api/v1/patching/patches');
+  }
+
+  /**
+   * Missing-patch findings per endpoint. Requires `patching:read`.
+   * @returns {Promise<Array<object>>}
+   */
+  async listPatchFindings() {
+    return this.request('/api/v1/patching/findings');
+  }
+
+  /**
+   * Patch scans in the current org. Requires `patching:read`.
+   * @returns {Promise<Array<object>>}
+   */
+  async listPatchScans() {
+    return this.request('/api/v1/patching/scans');
+  }
+
+  /**
+   * Patch deployments in the current org. Requires `patching:read`.
+   * @returns {Promise<Array<object>>}
+   */
+  async listPatchDeployments() {
+    return this.request('/api/v1/patching/deployments');
+  }
+
+  /**
+   * Create a patch deployment (created → approved → executed → verified).
+   * Requires `patching:deploy`.
+   * @param {{ name: string, items: Array<{ endpoint_id: string, patch_id: string }>, scheduled_at?: string }} deployment
+   * @returns {Promise<object>} (201).
+   */
+  async createPatchDeployment(deployment) {
+    return this.request('/api/v1/patching/deployments', {
+      method: 'POST',
+      body: deployment,
+    });
+  }
+
+  /**
+   * Approve a deployment. Requires `patching:approve`.
+   * @param {string} deploymentId
+   */
+  async approvePatchDeployment(deploymentId) {
+    return this.request(`/api/v1/patching/deployments/${encodeURIComponent(deploymentId)}/approve`, {
+      method: 'POST',
+    });
+  }
+
+  /**
+   * Execute a deployment (issues a `patch_deploy` agent job per item).
+   * Requires `patching:deploy`.
+   * @param {string} deploymentId
+   */
+  async executePatchDeployment(deploymentId) {
+    return this.request(`/api/v1/patching/deployments/${encodeURIComponent(deploymentId)}/execute`, {
+      method: 'POST',
+    });
+  }
+
+  /**
+   * Cancel a deployment (before execution). Requires `patching:deploy`.
+   * @param {string} deploymentId
+   */
+  async cancelPatchDeployment(deploymentId) {
+    return this.request(`/api/v1/patching/deployments/${encodeURIComponent(deploymentId)}/cancel`, {
+      method: 'POST',
+    });
+  }
+
+  /**
+   * Verify a deployment (issues a `patch_scan` verification job).
+   * Requires `patching:deploy`.
+   * @param {string} deploymentId
+   */
+  async verifyPatchDeployment(deploymentId) {
+    return this.request(`/api/v1/patching/deployments/${encodeURIComponent(deploymentId)}/verify`, {
+      method: 'POST',
+    });
+  }
+
+  // -------------------------------------------------- vulnerabilities (Phase 3)
+
+  /**
+   * Scan engines in the current org. Engine passwords are never returned
+   * (`has_password` only). Requires `vulnerabilities:read`.
+   * @returns {Promise<Array<object>>}
+   */
+  async listVulnEngines() {
+    return this.request('/api/v1/vulnerabilities/engines');
+  }
+
+  /**
+   * Create a scan engine (`greenbone` or `manual`). Requires
+   * `vulnerabilities:manage`.
+   * @param {{ name: string, engine_type: string, host?: string, port?: number, username?: string, password?: string }} engine
+   * @returns {Promise<object>} (201).
+   */
+  async createVulnEngine(engine) {
+    return this.request('/api/v1/vulnerabilities/engines', {
+      method: 'POST',
+      body: engine,
+    });
+  }
+
+  /**
+   * Delete a scan engine (deleting the default promotes the oldest
+   * remaining engine). Requires `vulnerabilities:manage`.
+   * @param {string} engineId
+   */
+  async deleteVulnEngine(engineId) {
+    return this.request(`/api/v1/vulnerabilities/engines/${encodeURIComponent(engineId)}`, {
+      method: 'DELETE',
+    });
+  }
+
+  /**
+   * Set the default scan engine. Requires `vulnerabilities:manage`.
+   * @param {string} engineId
+   */
+  async setDefaultVulnEngine(engineId) {
+    return this.request(`/api/v1/vulnerabilities/engines/${encodeURIComponent(engineId)}/set-default`, {
+      method: 'POST',
+    });
+  }
+
+  /**
+   * CVE catalog (global public data). Filter with `?kev=true` or
+   * `?severity=critical`. Requires `vulnerabilities:read`.
+   * @param {{ kev?: boolean, severity?: string }} [filters={}]
+   * @returns {Promise<Array<object>>}
+   */
+  async listCves({ kev, severity } = {}) {
+    const params = new URLSearchParams();
+    if (kev !== undefined) params.set('kev', String(kev));
+    if (severity) params.set('severity', severity);
+    const q = params.toString();
+    return this.request(`/api/v1/vulnerabilities/cves${q ? `?${q}` : ''}`);
+  }
+
+  /**
+   * Derived vulnerability summary (counts only, never invented rows).
+   * Requires `vulnerabilities:read`.
+   * @returns {Promise<object>} `{by_severity, by_status, open_kev, total_open}`.
+   */
+  async getVulnSummary() {
+    return this.request('/api/v1/vulnerabilities/summary');
+  }
+
+  /**
+   * Vulnerability findings in the current org. Requires
+   * `vulnerabilities:read`.
+   * @returns {Promise<Array<object>>}
+   */
+  async listVulnFindings() {
+    return this.request('/api/v1/vulnerabilities/findings');
+  }
+
+  /**
+   * One finding by id. Requires `vulnerabilities:read`.
+   * @param {string} findingId
+   */
+  async getVulnFinding(findingId) {
+    return this.request(`/api/v1/vulnerabilities/findings/${encodeURIComponent(findingId)}`);
+  }
+
+  /**
+   * Update a finding (status transitions; setting `remediated` directly
+   * is refused — use remediate → verify). Requires
+   * `vulnerabilities:manage`.
+   * @param {string} findingId
+   * @param {object} patch
+   */
+  async updateVulnFinding(findingId, patch) {
+    return this.request(`/api/v1/vulnerabilities/findings/${encodeURIComponent(findingId)}`, {
+      method: 'PATCH',
+      body: patch,
+    });
+  }
+
+  /**
+   * Remediate a finding: creates a real ticket + remediation link, finding
+   * → `in_progress`. Requires `vulnerabilities:remediate`.
+   * @param {string} findingId
+   * @returns {Promise<object>} (201).
+   */
+  async remediateVulnFinding(findingId) {
+    return this.request(`/api/v1/vulnerabilities/findings/${encodeURIComponent(findingId)}/remediate`, {
+      method: 'POST',
+      body: {},
+    });
+  }
+
+  /**
+   * Start verification of a remediated finding. Issues an agent
+   * `vuln_scan` job when the endpoint is enrolled, otherwise queues a
+   * verification scan. Requires `vulnerabilities:manage`.
+   * @param {string} findingId
+   * @returns {Promise<object>} `{finding, job_id?, scan_id?}`.
+   */
+  async verifyVulnFinding(findingId) {
+    return this.request(`/api/v1/vulnerabilities/findings/${encodeURIComponent(findingId)}/verify`, {
+      method: 'POST',
+    });
+  }
+
+  /**
+   * Vulnerability scans in the current org. Requires `vulnerabilities:read`.
+   * @returns {Promise<Array<object>>}
+   */
+  async listVulnScans() {
+    return this.request('/api/v1/vulnerabilities/scans');
+  }
+
+  /**
+   * Import scan results into a manual-engine scan (or a queued
+   * verification scan). Requires `vulnerabilities:manage`.
+   * @param {string} scanId
+   * @param {Array<object>} results
+   * @returns {Promise<object>} `{scan_id, status, results_applied, findings_created, findings_updated, verified}`.
+   */
+  async importVulnScanResults(scanId, results) {
+    return this.request(`/api/v1/vulnerabilities/scans/${encodeURIComponent(scanId)}/import-results`, {
+      method: 'POST',
+      body: { results },
+    });
+  }
+
+  // ------------------------------------------------------------ CMDB (Phase 3)
+
+  /**
+   * Configuration items in the current org. Requires `cmdb:read`.
+   * @returns {Promise<Array<object>>}
+   */
+  async listCmdbItems() {
+    return this.request('/api/v1/cmdb/items');
+  }
+
+  /**
+   * Create a configuration item. Requires `cmdb:manage`.
+   * @param {{ name: string, ci_type: string, status?: string, asset_id?: string, endpoint_id?: string }} item
+   * @returns {Promise<object>} (201).
+   */
+  async createCmdbItem(item) {
+    return this.request('/api/v1/cmdb/items', {
+      method: 'POST',
+      body: item,
+    });
+  }
+
+  /**
+   * One CI with its relationships. Requires `cmdb:read`.
+   * @param {string} ciId
+   */
+  async getCmdbItem(ciId) {
+    return this.request(`/api/v1/cmdb/items/${encodeURIComponent(ciId)}`);
+  }
+
+  /**
+   * Depth-2 dependency graph for a CI. Requires `cmdb:read`.
+   * @param {string} ciId
+   */
+  async getCmdbGraph(ciId) {
+    return this.request(`/api/v1/cmdb/items/${encodeURIComponent(ciId)}/graph`);
+  }
+
+  /**
+   * Add a relationship between CIs (no self-links). Requires `cmdb:manage`.
+   * @param {string} ciId
+   * @param {{ target_ci_id: string, relationship_type: string }} relationship
+   * @returns {Promise<object>} (201).
+   */
+  async createCmdbRelationship(ciId, relationship) {
+    return this.request(`/api/v1/cmdb/items/${encodeURIComponent(ciId)}/relationships`, {
+      method: 'POST',
+      body: relationship,
+    });
+  }
+
+  // ---------------------------------------------------------- network (Phase 3)
+
+  /**
+   * Network devices in the current org. Requires `network:read`.
+   * @returns {Promise<Array<object>>}
+   */
+  async listNetworkDevices() {
+    return this.request('/api/v1/network/devices');
+  }
+
+  /**
+   * Create a network device. Requires `network:manage`.
+   * @param {{ hostname: string, ip_address?: string, device_type?: string }} device
+   * @returns {Promise<object>} (201).
+   */
+  async createNetworkDevice(device) {
+    return this.request('/api/v1/network/devices', {
+      method: 'POST',
+      body: device,
+    });
+  }
+
+  /**
+   * Topology (devices + links) for the map. Requires `network:read`.
+   * @returns {Promise<object>}
+   */
+  async getNetworkTopology() {
+    return this.request('/api/v1/network/topology');
+  }
+
+  /**
+   * Service dependencies. Requires `network:read`.
+   * @returns {Promise<Array<object>>}
+   */
+  async listServiceDependencies() {
+    return this.request('/api/v1/network/service-dependencies');
+  }
+
+  /**
+   * Derived health for a device (from latest metrics + events, never
+   * stored). Requires `network:read`.
+   * @param {string} deviceId
+   */
+  async getNetworkDeviceHealth(deviceId) {
+    return this.request(`/api/v1/network/devices/${encodeURIComponent(deviceId)}/health`);
+  }
+
+  /**
+   * Run real discovery (ping sweep, bounded CIDR; SNMP only when
+   * `pysnmp` is installed). Requires `network:discover`.
+   * @param {string} cidr
+   * @returns {Promise<object>} `{discovered, updated, unreachable, snmp_available, probe_method}`.
+   */
+  async discoverNetwork(cidr) {
+    return this.request('/api/v1/network/discover', {
+      method: 'POST',
+      body: { cidr },
+    });
+  }
+
+  /**
+   * Network events (outages, thresholds). Requires `network:read`.
+   * @returns {Promise<Array<object>>}
+   */
+  async listNetworkEvents() {
+    return this.request('/api/v1/network/events');
+  }
+
+  /**
+   * Acknowledge a network event. Requires `network:manage`.
+   * @param {string} eventId
+   */
+  async acknowledgeNetworkEvent(eventId) {
+    return this.request(`/api/v1/network/events/${encodeURIComponent(eventId)}/acknowledge`, {
+      method: 'POST',
+    });
+  }
+
+  /**
+   * Certificates expiring within `days` (expiry derived from `not_after`).
+   * Requires `network:read`.
+   * @param {number} [days=30]
+   * @returns {Promise<Array<object>>}
+   */
+  async listExpiringCertificates(days = 30) {
+    return this.request(`/api/v1/network/certificates/expiring?days=${days}`);
+  }
+
   // ----------------------------------------------------------------- health
 
   /**

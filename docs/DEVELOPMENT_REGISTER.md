@@ -95,18 +95,32 @@ storage backend configured (otherwise on-demand download regenerates).
 when rounds settle); Docker unavailable in this VM (compose is code
 only); AWS/Cognito/staging still gated on infrastructure approval.
 
-## Phase 3 — Endpoint + security engine (PLANNED)
+## Phase 3 — Endpoint + security engine (DONE, Nov 26, 2026)
+
+Backend side implemented, 236/236 tests passing
+(`scripts/run_tests_locked.sh`), live-boot verified end to end (31/31
+checks: enroll → heartbeat → inventory → patch_scan job → finding;
+manual vuln import → remediate → verify → agent rescan → verified;
+CMDB + network smoke). Migrations 0009–0012, single head `0012`.
 
 | Feature | Tier | Status |
 |---|---|---|
-| Endpoint agent API contract (enrollment, identity, heartbeats, inventory, jobs, updates) | — | Contract in `docs/API_CONTRACT.md` §9; agent repo `nullitsm/null-endpoint-agent` created at Phase 3 start |
-| Endpoint management, patching, software | — | Planned |
-| Vulnerability management: real Greenbone/OpenVAS engine, multi-engine architecture, real CVE + CISA KEV, remediation tickets, rescan verification | — | Planned |
-| CMDB / assets | — | Planned |
+| Endpoint agent API contract (enrollment, identity, heartbeats, inventory, jobs, updates) | — | **Done** — `app/routers/agents.py`, `app/routers/endpoints.py`, `app/services/agent_service.py`, `app/services/endpoint_service.py`, `app/device_auth.py`; contract §9 flipped to implemented; agent repo `nullitsm/null-endpoint-agent` still to be created (parent) — no real device has run these calls yet |
+| Endpoint management, patching, software | — | **Done** — patching: `app/routers/patching.py`, `app/services/patching_service.py`; update check returns `download_url: null` (no artifact storage configured — no update is ever offered) |
+| Vulnerability management: real Greenbone/OpenVAS engine, multi-engine architecture, real CVE + CISA KEV, remediation tickets, rescan verification | — | **Done** — `app/services/greenbone.py` (pure-stdlib GMP client), `app/services/vuln_service.py`, `app/tasks/vuln_tasks.py` (`null.tasks.sync_cve_kev`, daily beat), `app/routers/vulnerabilities.py`; verify flow added by the coordinator (`POST …/findings/{id}/verify`) |
+| CMDB / assets | — | **Done** — `app/routers/cmdb.py`, `app/services/cmdb_service.py` (assets themselves were done in Phase 2) |
 | Asset lifecycle + software licensing (POs, vendors, warranties, assignments, check-in/out, transfers, lost/stolen, depreciation, retirement, disposal, license compliance/renewals) | **Tier 1** | Done in Phase 2 (migration 0007) |
-| Network ops + monitoring (discovery, topology, SNMP, syslog, outage alerts, service dependency mapping) | Tier 2 | Planned |
+| Network ops + monitoring (discovery, topology, SNMP, syslog, outage alerts, service dependency mapping) | Tier 2 | **Done, except:** DNS/DHCP and syslog ingestion not built; SNMP only when `pysnmp` is installed (else honestly `snmp_unavailable`); on-call schedules/rotations deferred to Tier 2 — `app/routers/network.py`, `app/services/network_service.py`, `app/tasks/network_tasks.py` (`null.tasks.check_network_health`, hourly beat) |
 | NULL Threat Intelligence workspace (builds on the live threat map) | Tier 3 | Planned |
 | NULL Infrastructure Intelligence (assets/endpoints/network/services/vulns/dependencies in one picture) | Tier 3 | Planned |
+
+**Outstanding dependencies (Phase 3):** agent repo creation (parent,
+when the coordinator says ready — the backend is ready); artifact
+storage for agent updates (until then `download_url` stays `null`);
+NVD full backfill is the daily sync job, not a single run (one bounded
+2000-result page per run by design); Docker unavailable in this VM
+(compose is code only); AWS/Cognito/staging still gated on
+infrastructure approval.
 
 ## Phase 4 — Enterprise operations (PLANNED)
 

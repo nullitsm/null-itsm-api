@@ -607,6 +607,101 @@ Depreciation: straight-line = price × (1 − elapsed/years); declining =
 double-declining fixed 2x rate; `none` = price. Recomputed on read; the
 stored column is only a snapshot.
 
+### 7.16 Agent API + endpoints — `/api/v1/agents`, `/api/v1/endpoints` (Phase 3)
+
+Implements the §9 contract on the backend side. Device calls authenticate
+with `X-Device-Id` + `X-Device-Token` (no user Bearer token); user-facing
+calls use Bearer + the `endpoints:*` permissions.
+
+| Method | Path | Auth / Perm | Notes |
+|---|---|---|---|
+| POST | `/api/v1/endpoints/enrollment-tokens` | Bearer `endpoints:manage` | Issues a one-time token; response carries the raw token **once** (only its SHA-256 hash is stored) |
+| GET | `/api/v1/endpoints/enrollment-tokens` | Bearer `endpoints:read` | Lists tokens incl. used/revoked state |
+| POST | `/api/v1/endpoints/enrollment-tokens/{token_id}/revoke` | Bearer `endpoints:manage` | Revokes an unused token |
+| POST | `/api/v1/agents/enroll` | Enrollment token (no Bearer) | `{enrollment_token, device: {hostname, os, os_version, arch, serial?}}` → 201 `{device_id, device_token, enrolled_organization_id}`; token consumed atomically, single-use; reuse → 401 |
+| POST | `/api/v1/agents/{device_id}/heartbeat` | Device auth | `{status: "online", agent_version?, ip_address?}` → `{status: "ok", server_time, pending_jobs}` |
+| POST | `/api/v1/agents/{device_id}/inventory` | Device auth | Strict section validation (§9.4): unknown top-level section → 422; 201 `{status: "ok", inventory_id, received_at}`; append-only |
+| GET | `/api/v1/agents/{device_id}/jobs/next` | Device auth | `{job: null}` or `{job: {job_id, type, payload, issued_at, expires_at}}`; at-most-once delivery; expired jobs are never re-delivered under the same `job_id` |
+| POST | `/api/v1/agents/{device_id}/jobs/{job_id}/result` | Device auth | `{status: "succeeded" \| "failed" \| "rejected", output?, error?, started_at, finished_at}` → `{status: "ok"}`; dispatches to the patching / vuln apply functions by job type; a failing downstream apply is audited (`agent.job_result_handler_failed`) and swallowed so the device's recorded result survives (apply functions are idempotent) |
+| GET | `/api/v1/agents/updates/check?current_version=…&os=…&arch=…` | Device auth | `{update_available, version?, download_url?, sha256?, signature?, release_notes?}` — **`download_url` is always `null` in Phase 3**: no artifact storage is configured, so no update is ever offered and nothing is installed; the signed-update rule (§9.6) stands for when storage lands |
+| GET/POST | `/api/v1/endpoints` | Bearer `endpoints:read` / `endpoints:manage` | List / create (manual registration, no device token) |
+| GET/PATCH | `/api/v1/endpoints/{endpoint_id}` | Bearer `endpoints:read` / `endpoints:modify` | Rename / update; status `enrolled \| online \| offline \| stale \| unenrolled` |
+| POST | `/api/v1/endpoints/{endpoint_id}/revoke` | Bearer `endpoints:manage` | Revokes the device credential; device gets 401 thereafter |
+| GET | `/api/v1/endpoints/{endpoint_id}/inventory`, `/api/v1/endpoints/{endpoint_id}/jobs` | Bearer `endpoints:read` | Append-only inventory history; job history |
+| POST | `/api/v1/endpoints/{endpoint_id}/jobs` | Bearer `endpoints:manage` (+ type-specific perm, e.g. `endpoints:deploy`) | Issue a job `{type, payload?}`; job types: `patch_scan`, `patch_deploy`, `vuln_scan`, `inventory_refresh` |
+| GET/POST/PATCH/DELETE | `/api/v1/endpoints/releases` | Bearer `endpoints:read` / `endpoints:manage` | Agent release catalog — **global, not tenant data** (no org, no RLS); the source of truth for update checks |
+
+### 7.17 Patching — `/api/v1/patching` (Phase 3)
+
+| Method | Path | Auth / Perm | Notes |
+|---|---|---|---|
+| GET | `/api/v1/patching/patches`, `/api/v1/patching/patches/{patch_id}` | Bearer `patching:read` | Patch catalog (per org) |
+| GET | `/api/v1/patching/findings` | Bearer `patching:read` | Missing-patch findings per endpoint; one open row per endpoint+patch (partial unique index) |
+| GET/POST | `/api/v1/patching/scans` | Bearer `patching:read` / `endpoints:scan` | Scan records; a completed scan is treated as a **full inventory** — a previously-missing finding for a patch the scan does not report flips to `installed` |
+| GET | `/api/v1/patching/scans/{scan_id}` | Bearer `patching:read` | |
+| GET/POST | `/api/v1/patching/deployments` | Bearer `patching:read` / `patching:deploy` | Deployment lifecycle: created → approved → executed → verified; cancel allowed before execution |
+| GET | `/api/v1/patching/deployments/{deployment_id}` | Bearer `patching:read` | |
+| POST | `/api/v1/patching/deployments/{deployment_id}/approve` | Bearer `patching:approve` | |
+| POST | `/api/v1/patching/deployments/{deployment_id}/execute` | Bearer `patching:deploy` | Issues a `patch_deploy` agent job per deployment item |
+| POST | `/api/v1/patching/deployments/{deployment_id}/cancel` | Bearer `patching:deploy` | |
+| POST | `/api/v1/patching/deployments/{deployment_id}/verify` | Bearer `patching:deploy` | Issues a `patch_scan` verification job; findings flip to `installed` only when the rescan confirms |
+
+Scan/deploy results arrive through the agent job-result path (§7.16), never
+by direct POST: `apply_patch_scan_result` / `apply_patch_deploy_result`
+are idempotent per job, and malformed agent output returns
+`{"status": "malformed_output"}` with state unchanged.
+
+### 7.18 Vulnerabilities — `/api/v1/vulnerabilities` (Phase 3)
+
+Real engine support (Greenbone/OpenVAS first, multi-engine by design)
+plus a manual engine for operator-entered results. CVE data comes from
+the real NVD API + CISA KEV feed (`null.tasks.sync_cve_kev`, daily beat;
+NVD is bounded to one 2000-result page per run by design, KEV fully;
+both feeds are fetched before any write, so a failed run leaves the
+catalog unchanged). Nothing here invents findings.
+
+| Method | Path | Auth / Perm | Notes |
+|---|---|---|---|
+| GET/POST | `/api/v1/vulnerabilities/engines` | Bearer `vulnerabilities:read` / `vulnerabilities:manage` | `engine_type: greenbone \| manual \| ...`; engine passwords Fernet-encrypted, 503 when no field key (never plaintext); secrets never returned (`has_password` only) |
+| GET/PATCH/DELETE | `/api/v1/vulnerabilities/engines/{engine_id}` | Bearer `vulnerabilities:read` / `vulnerabilities:manage` | Deleting the default engine promotes the oldest remaining engine to default |
+| POST | `/api/v1/vulnerabilities/engines/{engine_id}/set-default` | Bearer `vulnerabilities:manage` | |
+| GET | `/api/v1/vulnerabilities/cves`, `/api/v1/vulnerabilities/cves/{cve_id}` | Bearer `vulnerabilities:read` | Global public catalog (no RLS): `?kev=true`, `?severity=…`; `kev`, `cvss_score`, `kev_due_date`, `kev_ransomware_use` |
+| GET/POST | `/api/v1/vulnerabilities/scans` | Bearer `vulnerabilities:read` / `vulnerabilities:manage` | |
+| GET | `/api/v1/vulnerabilities/scans/{scan_id}` | Bearer `vulnerabilities:read` | |
+| POST | `/api/v1/vulnerabilities/scans/{scan_id}/import-results` | Bearer `vulnerabilities:manage` | Manual-engine scans only — **except** a queued verification scan (see verify below), which exists to receive an imported rescan. Correlates by hostname/IP to endpoints (duplicate hostnames resolve to the most recently seen endpoint, never 500) and dedupes to one open finding per endpoint+CVE; re-detection of a remediated finding reopens it in place |
+| POST | `/api/v1/vulnerabilities/scans/{scan_id}/poll` | Bearer `vulnerabilities:manage` | Polls a Greenbone engine for a running scan (GMP over TLS); unreachable engine at scan-create → 502, no scan row |
+| POST | `/api/v1/vulnerabilities/scans/{scan_id}/cancel` | Bearer `vulnerabilities:manage` | |
+| GET | `/api/v1/vulnerabilities/summary` | Bearer `vulnerabilities:read` | Derived counts only: `by_severity`, `by_status`, `open_kev`, `total_open` |
+| GET | `/api/v1/vulnerabilities/findings`, `/api/v1/vulnerabilities/findings/{finding_id}` | Bearer `vulnerabilities:read` | Statuses: `open \| in_progress \| remediated \| verified \| accepted \| false_positive` |
+| PATCH | `/api/v1/vulnerabilities/findings/{finding_id}` | Bearer `vulnerabilities:manage` | Status transitions; setting `remediated` directly is forbidden (400) — remediation goes through the remediate → verify flow |
+| POST | `/api/v1/vulnerabilities/findings/{finding_id}/remediate` | Bearer `vulnerabilities:remediate` | Creates a **real ticket** via the ticket path + a `remediation_tickets` link (finding → ticket → patch → deployment → verification scan); finding → `in_progress` |
+| POST | `/api/v1/vulnerabilities/findings/{finding_id}/verify` | Bearer `vulnerabilities:manage` | Requires `in_progress` with an open remediation link (or `remediated` for retry). Flips finding + open links to `remediated`; if the endpoint is agent-enrolled, issues a `vuln_scan` agent job with payload `{"verify_finding_id": …}` (job issuance is authorized by this call's `vulnerabilities:manage`); otherwise creates a queued `VulnScan` and links it immediately. When the verification scan's results arrive (agent job result or manual import), the finding becomes `verified` if its CVE is absent, or reopens to `open` if present |
+
+### 7.19 CMDB + network — `/api/v1/cmdb`, `/api/v1/network` (Phase 3)
+
+| Method | Path | Auth / Perm | Notes |
+|---|---|---|---|
+| GET/POST | `/api/v1/cmdb/items` | Bearer `cmdb:read` / `cmdb:manage` | Configuration items; may link to an asset or endpoint |
+| GET/PATCH/DELETE | `/api/v1/cmdb/items/{ci_id}` | Bearer `cmdb:read` / `cmdb:manage` | |
+| POST/GET | `/api/v1/cmdb/items/{ci_id}/relationships` | Bearer `cmdb:manage` / `cmdb:read` | No self-links (CHECK); relationship types e.g. `depends_on`, `hosts`, `runs_on` |
+| DELETE | `/api/v1/cmdb/relationships/{rel_id}` | Bearer `cmdb:manage` | |
+| GET | `/api/v1/cmdb/items/{ci_id}/graph` | Bearer `cmdb:read` | Depth-2 dependency graph |
+| GET/POST | `/api/v1/network/devices` | Bearer `network:read` / `network:manage` | Switch/router/server inventory; SNMP community stored encrypted, never returned |
+| GET/PATCH/DELETE | `/api/v1/network/devices/{device_id}` | Bearer `network:read` / `network:manage` | Status derived: `up \| down \| degraded \| unknown` |
+| GET/POST | `/api/v1/network/devices/{device_id}/interfaces` | Bearer `network:read` / `network:manage` | |
+| PATCH/DELETE | `/api/v1/network/interfaces/{interface_id}` | Bearer `network:manage` | |
+| GET | `/api/v1/network/topology` | Bearer `network:read` | Devices + links for the topology map |
+| POST/DELETE | `/api/v1/network/topology/links`, `/api/v1/network/topology/links/{link_id}` | Bearer `network:manage` | |
+| GET/POST/PATCH/DELETE | `/api/v1/network/service-dependencies` | Bearer `network:read` / `network:manage` | Service dependency mapping (service → depends on → device/CI) |
+| POST | `/api/v1/network/metrics` | Bearer `network:manage` | Append-only interface/bandwidth/CPU/memory samples; never updated in place |
+| GET | `/api/v1/network/devices/{device_id}/metrics`, `/api/v1/network/devices/{device_id}/health` | Bearer `network:read` | Health is **derived** from the latest metrics + events, not stored |
+| GET/POST | `/api/v1/network/events` | Bearer `network:read` / `network:manage` | Outage / threshold events |
+| POST | `/api/v1/network/events/{event_id}/acknowledge` | Bearer `network:manage` | |
+| GET | `/api/v1/network/certificates/expiring?days=…`, `/api/v1/network/certificates` | Bearer `network:read` | Expiry is derived from `not_after`, never a stored flag |
+| POST/PATCH/DELETE | `/api/v1/network/certificates`, `/api/v1/network/certificates/{cert_id}` | Bearer `network:manage` | |
+| POST | `/api/v1/network/discover` | Bearer `network:discover` | **Real** discovery: ICMP/TCP ping sweep bounded to a /24 (default) — `{"cidr": "127.0.0.1/32"}` in tests; SNMP only when `pysnmp` is installed (otherwise `snmp_unavailable`, honestly reported). Existing devices by IP are updated in place (duplicate IPs resolve to the most recently seen device); new live hosts are created. DNS/DHCP and syslog ingestion are **not** built (Tier 2, see register) |
+| | `null.tasks.check_network_health` (Celery, hourly beat) | — | Marks stale `up` devices `down`, one outage event per downtime episode; idempotent per episode |
+
 ## 8. Browser client mapping
 
 `frontend/null-api-client.js` (`NullApiClient`) implements every endpoint
@@ -621,12 +716,14 @@ once flow, the `onLoadingChange` in-flight counter, normalized
 `getOrgContext()` / `setOrgContext()` for route protection and the org
 switcher. See `docs/FRONTEND_INTEGRATION.md` for the screen wiring.
 
-## 9. Agent API contract (Phase 3) — CONTRACT ONLY, NOT IMPLEMENTED
+## 9. Agent API contract (Phase 3) — IMPLEMENTED (backend side; agent repo pending)
 
-> **Status: this section defines the contract the separate endpoint-agent
-> repo (`nullitsm/null-endpoint-agent`) will implement against. None of
-> these endpoints exist in Phase 1. Do not call them against the Phase 1
-> API — they will 404. Do not present them as available.**
+> **Status: the backend side is implemented and live-boot verified
+> (Nov 26, 2026 — enroll → heartbeat → inventory → jobs → results, plus
+> patch and vuln-verify flows end to end). The endpoint agent itself
+> (`nullitsm/null-endpoint-agent`) does not exist yet — no real device has
+> run these calls. The backend never claims an agent action ran on a real
+> device when it did not.
 
 The agent is a separately managed component (Go agent, per the Phase 3
 scope). Its backend surface will live under `/api/v1/agents` and follows
@@ -722,14 +819,12 @@ agent **polls**; the server never initiates a connection to a device.
 - `GET /api/v1/agents/updates/check?current_version=…&os=…&arch=…` —
   `X-Device-Token` auth. Response: `{update_available: boolean,
   version?, download_url?, sha256?, signature?, release_notes?}`.
-- **Signed updates (hard rule):** an update is installed only when the
-  agent verifies the detached signature against the pinned NULL public
-  key **and** the SHA-256 of the downloaded artifact matches `sha256`.
-  A failed verification aborts the update and is reported as a job
-  result / heartbeat field, never retried silently in a loop.
-- `download_url` is a short-lived, per-device URL (not a public listing
-  of releases). The agent must not install an update it was not offered
-  through this endpoint.
+  **Implemented with `download_url: null` (Phase 3): no artifact storage
+  is configured, so the endpoint always reports no update available and
+  never offers a download. The signed-update rule below stands for when
+  artifact storage lands — an agent must not install an update it was
+  not offered through this endpoint, and must verify signature + SHA-256
+  when one is offered.
 
 ### 9.7 What the agent must never do
 

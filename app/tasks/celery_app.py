@@ -62,6 +62,18 @@ celery_app.conf.update(
             "task": "null.tasks.sweep_recurring_tickets",
             "schedule": 900.0,
         },
+        # Phase 3: CVE/KEV catalog sync (daily; NVD covers one bounded
+        # page per run by design, KEV fully — see app/tasks/vuln_tasks.py).
+        "sync-cve-kev-daily": {
+            "task": "null.tasks.sync_cve_kev",
+            "schedule": 86400.0,
+        },
+        # Phase 3: network health sweep (hourly; marks stale up-devices down,
+        # one outage event per downtime episode — see app/tasks/network_tasks.py).
+        "check-network-health-hourly": {
+            "task": "null.tasks.check_network_health",
+            "schedule": 3600.0,
+        },
     },
 )
 
@@ -70,8 +82,10 @@ celery_app.conf.update(
 # celery_app itself, so this must run after the app exists.
 from app.tasks import email_tasks as _email_tasks  # noqa: F401,E402
 from app.tasks import identity_tasks as _identity_tasks  # noqa: F401,E402
+from app.tasks import network_tasks as _network_tasks  # noqa: F401,E402
 from app.tasks import recurring_tasks as _recurring_tasks  # noqa: F401,E402
 from app.tasks import sla_tasks as _sla_tasks  # noqa: F401,E402
+from app.tasks import vuln_tasks as _vuln_tasks  # noqa: F401,E402
 
 
 @celery_app.task(name="null.tasks.expire_memberships")

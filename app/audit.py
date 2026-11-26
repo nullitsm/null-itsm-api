@@ -179,6 +179,70 @@ PLATFORM_TENANT_READ = "platform.tenant_read"
 PLATFORM_TENANT_USERS_READ = "platform.tenant_users_read"
 
 
+# --- Phase 3: agent / endpoints / patching / vulnerabilities ----------------
+AGENT_ENROLLED = "agent.enrolled"
+AGENT_JOB_ISSUED = "agent.job_issued"
+AGENT_JOB_DELIVERED = "agent.job_delivered"
+AGENT_JOB_RESULT = "agent.job_result"
+AGENT_JOB_RESULT_UNAPPLIED = "agent.job_result_unapplied"
+AGENT_JOB_RESULT_HANDLER_FAILED = "agent.job_result_handler_failed"
+AGENT_RELEASE_CREATED = "agent.release_created"
+AGENT_RELEASE_UPDATED = "agent.release_updated"
+AGENT_RELEASE_DELETED = "agent.release_deleted"
+
+ENDPOINT_ENROLLMENT_TOKEN_CREATED = "endpoint.enrollment_token_created"
+ENDPOINT_ENROLLMENT_TOKEN_REVOKED = "endpoint.enrollment_token_revoked"
+ENDPOINT_UPDATED = "endpoint.updated"
+ENDPOINT_REVOKED = "endpoint.revoked"
+
+PATCHING_SCAN_CREATED = "patching.scan_created"
+PATCHING_DEPLOYMENT_CREATED = "patching.deployment_created"
+PATCHING_DEPLOYMENT_APPROVED = "patching.deployment_approved"
+PATCHING_DEPLOYMENT_EXECUTED = "patching.deployment_executed"
+PATCHING_DEPLOYMENT_CANCELLED = "patching.deployment_cancelled"
+PATCHING_DEPLOYMENT_VERIFIED = "patching.deployment_verified"
+
+VULN_ENGINE_CREATED = "vulnerability.engine_created"
+VULN_ENGINE_UPDATED = "vulnerability.engine_updated"
+VULN_ENGINE_DELETED = "vulnerability.engine_deleted"
+VULN_ENGINE_DEFAULT_SET = "vulnerability.engine_default_set"
+VULN_SCAN_CREATED = "vulnerability.scan_created"
+VULN_SCAN_RESULTS_IMPORTED = "vulnerability.scan_results_imported"
+
+# --- CMDB (Phase 3) ---------------------------------------------------------
+CMDB_ITEM_CREATED = "cmdb.item_created"
+CMDB_ITEM_UPDATED = "cmdb.item_updated"
+CMDB_ITEM_DELETED = "cmdb.item_deleted"
+CMDB_RELATIONSHIP_CREATED = "cmdb.relationship_created"
+CMDB_RELATIONSHIP_DELETED = "cmdb.relationship_deleted"
+
+# --- Network operations (Phase 3) -------------------------------------------
+NETWORK_DEVICE_CREATED = "network.device_created"
+NETWORK_DEVICE_UPDATED = "network.device_updated"
+NETWORK_DEVICE_DELETED = "network.device_deleted"
+NETWORK_INTERFACE_CREATED = "network.interface_created"
+NETWORK_INTERFACE_UPDATED = "network.interface_updated"
+NETWORK_INTERFACE_DELETED = "network.interface_deleted"
+NETWORK_TOPOLOGY_LINK_CREATED = "network.topology_link_created"
+NETWORK_TOPOLOGY_LINK_DELETED = "network.topology_link_deleted"
+NETWORK_SERVICE_DEPENDENCY_CREATED = "network.service_dependency_created"
+NETWORK_SERVICE_DEPENDENCY_UPDATED = "network.service_dependency_updated"
+NETWORK_SERVICE_DEPENDENCY_DELETED = "network.service_dependency_deleted"
+NETWORK_METRICS_INGESTED = "network.metrics_ingested"
+NETWORK_EVENT_CREATED = "network.event_created"
+NETWORK_EVENT_ACKNOWLEDGED = "network.event_acknowledged"
+NETWORK_CERTIFICATE_CREATED = "network.certificate_created"
+NETWORK_CERTIFICATE_UPDATED = "network.certificate_updated"
+NETWORK_CERTIFICATE_DELETED = "network.certificate_deleted"
+NETWORK_DISCOVERY_COMPLETED = "network.discovery_completed"
+VULN_SCAN_CANCELLED = "vulnerability.scan_cancelled"
+VULN_SCAN_POLLED = "vulnerability.scan_polled"
+VULN_FINDING_UPDATED = "vulnerability.finding_updated"
+VULN_FINDING_VERIFICATION_STARTED = "vulnerability.finding_verification_started"
+VULN_FINDING_VERIFIED = "vulnerability.finding_verified"
+VULN_REMEDIATION_CREATED = "vulnerability.remediation_created"
+
+
 def write_audit(
     session: Session,
     *,

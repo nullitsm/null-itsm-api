@@ -114,17 +114,33 @@ migration 0006).
 
 ## Later phases — designed, not yet built
 
-### Phase 3 — Endpoint + security engine
-`endpoints` (agent-enrolled devices; identity via the agent API contract in
-`docs/API_CONTRACT.md` — the agent itself lives in `nullitsm/null-endpoint-agent`),
-`endpoint_inventory` (apps, services, hardware), `patches` + `patch_jobs`
-+ `patch_deployments`, `vulnerabilities` (+ `vulnerability_findings` per
-endpoint, CVE + CISA KEV enrichment), `scans` + `scan_results` (Greenbone/
-OpenVAS engine, multi-engine architecture), `remediation_tickets`
-(vulnerability → ticket → patch → rescan verification),
-`configuration_items` (CMDB) + `ci_relationships`, `network_devices`
-+ `network_interfaces` + `topology_links` + `service_dependencies`
-(network ops + monitoring, Tier 2), `on_call_schedules` + `on_call_rotations`.
+### Phase 3 — Endpoint + security engine (BUILT, Nov 26, 2026)
+
+Migrations 0009–0012. All org-scoped tables carry the standard RLS ALL
+policy; two tables are **global** (public, not tenant data) and have no
+RLS: `agent_releases` (release catalog) and `cve_catalog` (CVE/KEV data).
+
+- 0009 agent/endpoints: `enrollment_tokens` (SHA-256 hash, single-use,
+  atomic consume), `endpoints` (device token SHA-256 hash; status
+  `enrolled | online | offline | stale | unenrolled`),
+  `endpoint_inventory` (append-only), `agent_jobs` (at-most-once
+  delivery), `agent_releases` (GLOBAL). SECURITY DEFINER functions
+  `auth_get_enrollment_token_by_hash`,
+  `auth_get_endpoint_by_device_token`.
+- 0010 patching: `patches`, `patch_scans`, `patch_findings` (partial
+  unique index: one open row per endpoint+patch), `patch_deployments`,
+  `patch_deployment_items`.
+- 0011 vulnerabilities: `vuln_engines` (password Fernet-encrypted),
+  `cve_catalog` (GLOBAL), `vuln_scans`, `scan_results` (append-only raw
+  evidence), `vulnerability_findings` (partial unique index: one open
+  row per endpoint+CVE), `remediation_tickets` (finding → ticket →
+  patch → deployment → verification scan).
+- 0012 CMDB/network: `configuration_items`, `ci_relationships`
+  (no-self-link CHECK), `network_devices`, `network_interfaces`,
+  `topology_links`, `service_dependencies`, `network_metrics`
+  (append-only), `network_events`, `certificates`.
+- Deferred (Tier 2): `on_call_schedules` + `on_call_rotations`.
+  DNS/DHCP and syslog ingestion are not built either.
 
 ### Phase 4 — Enterprise operations
 `workflows` (+ `workflow_versions`, `workflow_runs`, `workflow_run_steps`

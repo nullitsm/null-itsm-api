@@ -18,19 +18,24 @@ from slowapi.errors import RateLimitExceeded
 
 from app.config import get_settings
 from app.rate_limit import limiter
+from app.routers import agents as agents_router
 from app.routers import assets as assets_router
 from app.routers import audit as audit_router
 from app.routers import auth as auth_router
 from app.routers import catalog as catalog_router
 from app.routers import changes as changes_router
+from app.routers import cmdb as cmdb_router
 from app.routers import email as email_router
+from app.routers import endpoints as endpoints_router
 from app.routers import exports as exports_router
 from app.routers import health as health_router
 from app.routers import identity as identity_router
 from app.routers import imports as imports_router
 from app.routers import knowledge as knowledge_router
+from app.routers import network as network_router
 from app.routers import notifications as notifications_router
 from app.routers import organizations as org_router
+from app.routers import patching as patching_router
 from app.routers import platform as platform_router
 from app.routers import portal as portal_router
 from app.routers import problems as problems_router
@@ -39,6 +44,7 @@ from app.routers import roles as roles_router
 from app.routers import sla as sla_router
 from app.routers import tickets as tickets_router
 from app.routers import users as users_router
+from app.routers import vulnerabilities as vulnerabilities_router
 
 settings = get_settings()
 
@@ -134,6 +140,13 @@ app.include_router(imports_router.router)
 app.include_router(exports_router.router)
 app.include_router(identity_router.router)
 app.include_router(assets_router.router)
+# Phase 3 routers (agent/endpoints, patching, vulnerabilities, CMDB, network).
+app.include_router(agents_router.router)
+app.include_router(endpoints_router.router)
+app.include_router(patching_router.router)
+app.include_router(vulnerabilities_router.router)
+app.include_router(cmdb_router.router)
+app.include_router(network_router.router)
 
 
 @app.get("/", include_in_schema=False)

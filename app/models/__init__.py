@@ -4,6 +4,17 @@ from app.models.access import AccessApproval, AccessReview
 from app.models.audit import AuditLog
 from app.models.auth import AuthSession, Invitation, InvitationRole, PasswordReset
 from app.models.base import Base
+from app.models.cmdb_network import (
+    Certificate,
+    CiRelationship,
+    ConfigurationItem,
+    NetworkDevice,
+    NetworkEvent,
+    NetworkInterface,
+    NetworkMetric,
+    ServiceDependency,
+    TopologyLink,
+)
 from app.models.email_portal import (
     DataExport,
     DataImport,
@@ -11,6 +22,13 @@ from app.models.email_portal import (
     EmailMessage,
     ImportRecord,
     PortalSession,
+)
+from app.models.endpoints import (
+    AgentJob,
+    AgentRelease,
+    Endpoint,
+    EndpointInventory,
+    EnrollmentToken,
 )
 from app.models.identity_assets import (
     AccessCertification,
@@ -56,6 +74,13 @@ from app.models.itsm import (
     TicketLink,
     TicketTemplate,
 )
+from app.models.patching import (
+    Patch,
+    PatchDeployment,
+    PatchDeploymentItem,
+    PatchFinding,
+    PatchScan,
+)
 from app.models.platform import Membership, Organization, User
 from app.models.platform_admin import (
     PlatformAccessGrant,
@@ -70,11 +95,21 @@ from app.models.platform_admin import (
 from app.models.rbac import Permission, Role, RolePermission, UserRole
 from app.models.sla import BusinessHours, EscalationEvent, EscalationRule, SlaBreach, SlaPolicy
 from app.models.ticket import Ticket, TicketCounter
+from app.models.vulnerabilities import (
+    CveCatalog,
+    RemediationTicket,
+    ScanResult,
+    VulnEngine,
+    VulnerabilityFinding,
+    VulnScan,
+)
 
 __all__ = [
     "AccessApproval",
     "AccessCertification",
     "AccessReview",
+    "AgentJob",
+    "AgentRelease",
     "ApiCredential",
     "Asset",
     "AssetAssignment",
@@ -85,11 +120,15 @@ __all__ = [
     "BusinessHours",
     "CatalogCategory",
     "CatalogItem",
+    "Certificate",
     "CertificationItem",
     "Change",
     "ChangeApproval",
     "ChangeCounter",
     "ChangeTask",
+    "CiRelationship",
+    "ConfigurationItem",
+    "CveCatalog",
     "DataExport",
     "DataImport",
     "DirectoryGroup",
@@ -97,6 +136,9 @@ __all__ = [
     "DirectorySyncRun",
     "EmailMailbox",
     "EmailMessage",
+    "Endpoint",
+    "EndpointInventory",
+    "EnrollmentToken",
     "EscalationEvent",
     "EscalationRule",
     "IdentityProvider",
@@ -110,9 +152,18 @@ __all__ = [
     "LicenseAssignment",
     "MajorIncident",
     "Membership",
+    "NetworkDevice",
+    "NetworkEvent",
+    "NetworkInterface",
+    "NetworkMetric",
     "Notification",
     "Organization",
     "PasswordReset",
+    "Patch",
+    "PatchDeployment",
+    "PatchDeploymentItem",
+    "PatchFinding",
+    "PatchScan",
     "Permission",
     "PlatformAccessGrant",
     "PlatformAuditLog",
@@ -127,11 +178,14 @@ __all__ = [
     "ProblemCounter",
     "PurchaseOrder",
     "RecurringTicket",
+    "RemediationTicket",
     "RequestCounter",
     "Role",
     "RolePermission",
+    "ScanResult",
     "ScimToken",
     "ServiceAccount",
+    "ServiceDependency",
     "ServiceRequest",
     "SlaBreach",
     "SlaPolicy",
@@ -144,8 +198,12 @@ __all__ = [
     "TicketCounter",
     "TicketLink",
     "TicketTemplate",
+    "TopologyLink",
     "User",
     "UserRole",
     "Vendor",
+    "VulnEngine",
+    "VulnScan",
+    "VulnerabilityFinding",
     "Warranty",
 ]

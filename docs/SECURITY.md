@@ -141,8 +141,11 @@ Rules enforced in the backend (not navigation visibility):
 - No WAF, no centralized SIEM ingestion, no automated security testing
   pipeline yet (Phase 5 / Tier 1).
 - Agent command allowlisting and signed agent updates are defined in the
-  Phase 3 contract (`docs/API_CONTRACT.md` §9) but not implemented — the
-  agent does not exist yet.
+  Phase 3 contract (`docs/API_CONTRACT.md` §9) and implemented on the
+  backend side (job types are allowlisted server-side; the agent repo
+  itself does not exist yet, so no real device enforces the allowlist
+  yet). Update checks return `download_url: null` — no artifact storage
+  is configured, so no update is ever offered.
 - SAML ACS validates assertions but mints no session (SSO session
   issuance is out of scope for Phase 2); portal login rejects
   MFA-enabled users (no MFA challenge step in the portal).
@@ -190,3 +193,48 @@ Rules enforced in the backend (not navigation visibility):
 - **Append-only additions:** `asset_lifecycle_events` (SELECT+INSERT
   RLS only, like the audit logs) and the same rule for
   `knowledge_feedback` / `survey_responses`.
+
+## 10. Phase 3 additions (Nov 26, 2026)
+
+- **Device authentication:** enrollment tokens and device tokens are
+  stored only as SHA-256 hashes; raw values are shown once at creation.
+  Pre-auth lookups go through SECURITY DEFINER functions
+  (`auth_get_enrollment_token_by_hash`,
+  `auth_get_endpoint_by_device_token`) — exact-hash match, at most one
+  row. Enrollment tokens are single-use and consumed atomically (a
+  concurrent second enroll with the same token gets 401). A device
+  token authenticates only its own device's agent endpoints; it
+  confers no user permissions and cannot call any user endpoint.
+  Revoking an endpoint (or its token) makes every agent call 401.
+- **Agent jobs are server-allowlisted by type** (`patch_scan`,
+  `patch_deploy`, `vuln_scan`, `inventory_refresh`); the backend never
+  sends arbitrary shell strings, and a job is issued only to the device
+  it names, only when the issuing user held the relevant permission at
+  issue time. Delivery is at-most-once; results are attributable to
+  the device that ran them. A failing downstream result handler is
+  audited (`agent.job_result_handler_failed`) and swallowed so the
+  device's recorded result survives — a device's result is ground
+  truth, and the apply functions are idempotent.
+- **Vuln engine credentials:** Greenbone (and future engine) passwords
+  are Fernet-encrypted at rest (`app/crypto.py`, key from
+  `NULL_FIELD_ENCRYPTION_KEY`); storing one with no key configured
+  fails closed with 503, never plaintext. Secrets are never returned
+  by the API (`has_password` only). SNMP communities are stored
+  encrypted the same way and never returned.
+- **Global tables without RLS:** `agent_releases` and `cve_catalog`
+  are public, non-tenant data (a release catalog and public CVE/KEV
+  data). They carry no `organization_id` and no RLS policy — by
+  design, not by omission. Everything org-scoped in Phase 3 uses the
+  standard RLS ALL policy.
+- **Verification flow authorization:** issuing a verification
+  `vuln_scan` job is authorized by the verify call's
+  `vulnerabilities:manage` permission; the job payload carries only
+  the finding id (`verify_finding_id`). A finding can reach
+  `remediated` only through the remediate → verify flow (direct PATCH
+  to `remediated` is 400), so verification evidence (agent rescan or
+  imported rescan) is always attached before a finding can become
+  `verified`.
+- **No invented findings:** scan results, patch findings, and
+  vulnerability findings come only from agent results, engine polls,
+  or operator imports. CVE/KEV data comes only from the real NVD API
+  and CISA KEV feed; a failed sync leaves the catalog unchanged.

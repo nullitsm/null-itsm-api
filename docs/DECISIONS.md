@@ -155,3 +155,64 @@ imports lazy inside functions, and tests that mutate shared fixture
 state (e.g. suspending the fixture technician) must use a fresh user or
 restore the fixture — order-dependent failures are environmental, not
 code, until proven otherwise by an isolated re-run.
+
+## 2026-11-26 — Phase 3: a completed patch scan is a full inventory
+A completed `patch_scan` is treated as a full inventory of the
+endpoint's patch state: a previously-missing finding for a patch the
+scan does not report flips to `installed`. The alternative (findings
+persist until explicitly cleared) would leave stale "missing" rows
+forever after a patch is installed out-of-band. Scans that fail or are
+cancelled change nothing.
+
+## 2026-11-26 — Phase 3: failing job-result handlers audit and continue
+When a downstream apply function (patch/vuln) fails while recording an
+agent job result, the dispatch audits `agent.job_result_handler_failed`
+(outcome failure) and swallows the error so the device's recorded
+result survives. The alternative (500 the result call and roll it
+back) would lose the device's ground-truth result and invite the agent
+to re-report. Apply functions are idempotent, so a later re-application
+stays safe.
+
+## 2026-11-26 — Phase 3: the verify flow closes the remediate gap
+PATCH forbade setting a finding to `remediated`, and nothing produced
+that state, so verification could never run. The coordinator added
+`POST /vulnerabilities/findings/{id}/verify`: it requires `in_progress`
+with an open remediation link (or `remediated` for retry), flips finding
++ open links to `remediated`, and triggers verification — an agent
+`vuln_scan` job (`{"verify_finding_id": …}`) when the endpoint is
+enrolled, otherwise a queued `VulnScan` linked immediately. The job
+issuance is authorized by the verify call's `vulnerabilities:manage`
+permission. Importing results into a queued verification scan is
+allowed even though it has no manual engine (it exists precisely to
+receive an imported rescan); importing into any other non-manual scan
+is still 400.
+
+## 2026-11-26 — Phase 3: global tables have no RLS by design
+`agent_releases` (release catalog) and `cve_catalog` (public CVE/KEV
+data) are global, not tenant data: they carry no `organization_id` and
+no RLS policy. Everything org-scoped in Phase 3 uses the standard RLS
+ALL policy. The distinction is documented in the model files so a
+missing policy is never "fixed" by adding tenant scoping to public data.
+
+## 2026-11-26 — Phase 3: duplicate hostnames resolve, never 500
+Hostnames are not unique (enrollment allows two machines to share one),
+so `resolve_endpoint` used `scalar_one_or_none()` and raised
+`MultipleResultsFound` on import — found by the live boot, where
+re-enrolling the same hostname created duplicates. Correlation now
+takes the most recently seen endpoint for the host (deterministic
+ordering, `limit(1)`); a host with no match stays host-only rather than
+being dropped. The same fix was applied to network discovery's
+IP lookup (DHCP reuse) and to `delete_engine`'s default-promotion query
+(`scalar_one_or_none()` over an unordered multi-row select).
+
+## 2026-11-26 — Phase 3: parallel builders, coordinator integration
+Four builders (A agent/endpoints, B patching, C vulnerabilities, D
+CMDB/network) worked in parallel with strict file ownership; shared
+files (`app/main.py`, `app/audit.py`, Celery beat) belonged to the
+coordinator. The coordinator centralized audit-action literals into
+`app/audit.py` constants, registered routers, wired beat entries, and
+added the verify endpoint + tests. Two real bugs surfaced only in
+full-suite / live-boot conditions: the `delete_engine` default
+promotion (`scalar_one_or_none` without `limit(1)`) and the duplicate
+hostname correlation above — both fixed at integration, with regression
+tests, rather than dismissed as order noise.
