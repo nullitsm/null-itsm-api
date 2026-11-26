@@ -1,9 +1,11 @@
 # NULL ITSM — Unified Data Model
 
-Status: Phase 1 implemented (migrations 0001–0002). Later-phase entities are
-**designed here so Phase 1's schema never needs rework**; they are implemented
-in their phases. Nothing in this document is a promise that a later-phase
-table already exists — the "Phase" column says when each entity lands.
+Status: Phase 1 implemented (migrations 0001–0003) and Phase 2
+implemented (migrations 0004–0008, Nov 26, 2026). Later-phase entities
+are **designed here so earlier schemas never need rework**; they are
+implemented in their phases. Nothing in this document is a promise that
+a later-phase table already exists — the "Phase" column says when each
+entity lands.
 
 Conventions (apply to every table):
 - UUID primary keys (`uuid_pk()`), `created_at` / `updated_at` TIMESTAMPTZ.
@@ -71,20 +73,46 @@ NULL personnel; they are not organization members and hold no org roles.
 - An org token can never authenticate a platform endpoint and vice versa
   (distinct JWT types: `access` vs `platform_access`).
 
-## Later phases — designed, not yet built
+## Phase 2 — ITSM engine (implemented, migrations 0004–0008, Nov 26, 2026)
 
-### Phase 2 — ITSM engine
-`requests` (service requests, linked to catalog items), `catalog_items`
-+ `catalog_categories`, `knowledge_articles` (+ `knowledge_feedback`),
-`changes` (+ `change_approvals`, `change_tasks`), `problems`
-(+ `known_errors`), `notifications` (in-app + email queue),
-`sla_policies` (+ `business_hours`, `sla_breaches`, `escalation_rules`),
-`email_messages` (inbound email-to-ticket + replies, Celery+IMAP/SMTP),
-`portal_sessions` (employee self-service; org branding in `organizations.settings`),
-`surveys` + `survey_responses`, `ticket_templates`, `recurring_tickets`,
-`ticket_links` (parent/child, related), `major_incidents`,
-`identity_providers` (SAML/OIDC config), `scim_tokens`, `directory_sync_runs`
-(SAML/SCIM/Entra/AD/LDAP — Tier 1), `imports`/`exports` (data portability).
+`requests` (service requests, linked to catalog items) + per-org
+`request_counters` (REQ-000001…), `catalog_items` +
+`catalog_categories`, `knowledge_articles` (+ `knowledge_feedback`),
+`changes` (+ `change_approvals`, `change_tasks`, `change_counters`
+CHG-000001…), `problems` (+ `known_errors`, `problem_counters`
+PRB-000001…), `notifications` (in-app + email queue),
+`ticket_comments` (internal notes vs public replies) +
+`ticket_attachments` (metadata only — file bytes live in the storage
+backend when configured, never in the DB) + `ticket_links`
+(parent/child/related) + `ticket_templates` + `recurring_tickets` +
+`major_incidents` + `surveys` + `survey_responses`, `sla_policies` (+
+`business_hours`, `sla_breaches`, `escalation_rules`,
+`escalation_events`; tickets carry `first_response_due_at`,
+`resolution_due_at`, `first_response_at`, `resolved_at`,
+`sla_policy_id`, `sla_breached`), `email_messages` (inbound
+email-to-ticket + replies, Celery+IMAP/SMTP) + `email_mailboxes`,
+`portal_sessions` (employee self-service; org branding in
+`organizations.settings`), `imports`/`import_records`/`exports` (data
+portability), `identity_providers` (SAML/OIDC config), `scim_tokens`,
+`directory_sync_runs`, `directory_groups` +
+`directory_group_memberships`, `service_accounts`, `api_credentials`,
+`access_certifications` (+ `certification_items`),
+`temporary_access_grants`.
+
+**Asset lifecycle + software licensing were pulled into Phase 2** (Tier
+1, per the Phase 2 brief) instead of Phase 3: `assets` (+
+`asset_lifecycle_events` append-only, `asset_assignments`),
+`purchase_orders`, `vendors`, `warranties`, `licenses` (+
+`license_assignments`). Endpoints, patching, vulnerabilities, and CMDB
+configuration items stay in Phase 3.
+
+Sweep support: `list_organization_ids()` SECURITY DEFINER function
+(migration 0008) lets Celery sweeps enumerate orgs — the app role cannot
+read `organizations` without an RLS context. `email_messages` polling
+has its own narrower function (`email_list_active_mailbox_orgs`,
+migration 0006).
+
+## Later phases — designed, not yet built
 
 ### Phase 3 — Endpoint + security engine
 `endpoints` (agent-enrolled devices; identity via the agent API contract in
@@ -94,9 +122,6 @@ NULL personnel; they are not organization members and hold no org roles.
 endpoint, CVE + CISA KEV enrichment), `scans` + `scan_results` (Greenbone/
 OpenVAS engine, multi-engine architecture), `remediation_tickets`
 (vulnerability → ticket → patch → rescan verification),
-`assets` (+ `asset_lifecycle_events`, `purchase_orders`, `vendors`,
-`warranties`, `licenses`, `license_assignments`, `asset_assignments`,
-check-in/out, transfers, lost/stolen, depreciation, retirement, disposal),
 `configuration_items` (CMDB) + `ci_relationships`, `network_devices`
 + `network_interfaces` + `topology_links` + `service_dependencies`
 (network ops + monitoring, Tier 2), `on_call_schedules` + `on_call_rotations`.

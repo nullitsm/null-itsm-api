@@ -14,11 +14,11 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.base import Base, created_at_col, updated_at_col, uuid_pk
+from app.models.base import Base, created_at_col, tz_col, updated_at_col, uuid_pk
 
 
 class Ticket(Base):
@@ -44,6 +44,17 @@ class Ticket(Base):
     assignee_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # --- SLA state (added by migration 0005) --------------------------------
+    # sla_policy_id is a plain UUID column with NO foreign key: the
+    # sla_policies table is created in the same migration and the column
+    # is added to this pre-existing table; existence is validated in the
+    # SLA service, not by the database.
+    first_response_due_at: Mapped[datetime | None] = tz_col()
+    resolution_due_at: Mapped[datetime | None] = tz_col()
+    first_response_at: Mapped[datetime | None] = tz_col()
+    resolved_at: Mapped[datetime | None] = tz_col()
+    sla_policy_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    sla_breached: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     created_at: Mapped[datetime] = created_at_col()
     updated_at: Mapped[datetime] = updated_at_col()
 

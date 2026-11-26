@@ -9,7 +9,7 @@ approval exists.
 
 - Every tenant-owned row carries `organization_id`.
 - PostgreSQL Row-Level Security is enabled on every tenant table
-  (migrations 0001–0002). Policies are enforced for the application role
+  (migrations 0001–0008). Policies are enforced for the application role
   `null_app`, which owns nothing and has no `BYPASSRLS`.
 - RLS is enabled, NOT forced: owner-owned SECURITY DEFINER functions must
   bypass RLS to read a credential row before any context exists (see
@@ -134,7 +134,7 @@ Rules enforced in the backend (not navigation visibility):
 - Input validation on every endpoint (Pydantic); request-id logging;
   validation errors return 422 with per-field details.
 
-## 8. Known gaps (Phase 1)
+## 8. Known gaps (Phase 2)
 
 - OIDC production provider (Cognito) not provisioned — local dev JWT
   issuer only. **Gated.**
@@ -143,5 +143,50 @@ Rules enforced in the backend (not navigation visibility):
 - Agent command allowlisting and signed agent updates are defined in the
   Phase 3 contract (`docs/API_CONTRACT.md` §9) but not implemented — the
   agent does not exist yet.
+- SAML ACS validates assertions but mints no session (SSO session
+  issuance is out of scope for Phase 2); portal login rejects
+  MFA-enabled users (no MFA challenge step in the portal).
+- Collision detection is not built (Phase 2, Tier 2).
 - The dev fixtures (`DevPass123!@#`, `platform@null.example.com`) are
   gated by `NULL_SEED_DEV_FIXTURES=true` and must never run in production.
+
+## 9. Phase 2 additions (Nov 26, 2026)
+
+- **Third token type:** portal sessions use JWT type `portal_access`
+  (60 min, recorded by SHA-256 hash in `portal_sessions`). A portal
+  token never authenticates a non-portal endpoint; an org `access`
+  token never authenticates a portal endpoint. Portal endpoints scope
+  to the caller's own records (another user's ticket/request is 404).
+- **SCIM bearer tokens:** `scim_tokens` rows hold only SHA-256 hashes;
+  the raw token is shown once at creation. Lookup goes through the
+  SECURITY DEFINER function `auth_get_scim_token_by_hash` (exact-hash
+  match, at most one row). A token is bound to its org server-side —
+  the client never supplies the org id.
+- **SAML ACS is unauthenticated by design** (the IdP posts the
+  assertion): the provider row is resolved through the SECURITY
+  DEFINER function `auth_get_identity_provider_by_id`, which returns
+  public config only (never secrets). Assertions are validated with
+  `python3-saml`; an unvalidatable assertion is never accepted, and a
+  validated assertion mints no session.
+- **Field encryption:** per-org mailbox passwords, OIDC client secrets,
+  and license keys are Fernet-encrypted at rest (`app/crypto.py`,
+  key from `NULL_FIELD_ENCRYPTION_KEY`). Encryption fails closed
+  (503) when no key is configured — secrets are never stored plaintext
+  as a fallback. Service-account / API-credential secrets are stored
+  only as SHA-256 hashes and shown once at creation.
+- **Sweep enumeration:** Celery sweeps enumerate organizations through
+  the grant-checked SECURITY DEFINER function `list_organization_ids()`
+  (migration 0008, ids only) and the narrower
+  `email_list_active_mailbox_orgs()` (migration 0006). Per-org work is
+  always RLS-scoped to the enumerated id.
+- **Offboarding** (`POST /api/v1/assets/offboard`) is one transaction:
+  suspend membership, revoke sessions, create recovery tickets,
+  return assets, revoke temp grants, audit with the full report.
+  Offboarding the org owner is refused.
+- **Attachments are metadata only:** file bytes go to the storage
+  backend when configured; when storage is unconfigured the upload
+  endpoint returns 503 and stores nothing. File content is never
+  stored in the database.
+- **Append-only additions:** `asset_lifecycle_events` (SELECT+INSERT
+  RLS only, like the audit logs) and the same rule for
+  `knowledge_feedback` / `survey_responses`.

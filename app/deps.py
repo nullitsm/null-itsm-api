@@ -75,6 +75,16 @@ def _bearer_token(request: Request) -> str:
     return auth[len("Bearer ") :].strip()
 
 
+def get_bearer_token(request: Request) -> str:
+    """Public accessor for the raw bearer token.
+
+    Used by auth paths that live outside this module (portal sessions,
+    SCIM bearer tokens): they decode the token themselves and set their
+    own RLS context.
+    """
+    return _bearer_token(request)
+
+
 def _decode_access_token(token: str):
     verifier = get_token_verifier()
     if verifier is not None:

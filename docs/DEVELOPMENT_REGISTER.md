@@ -48,22 +48,52 @@ provisioning + backup/recovery testing (all need infrastructure approval);
 frontend wiring (parent says when rounds settle); Docker unavailable in
 this VM (compose is code-only).
 
-## Phase 2 — Complete ITSM engine (PLANNED — next)
+## Phase 2 — Complete ITSM engine (DONE, Nov 26, 2026)
 
 | Feature | Tier | Status |
 |---|---|---|
-| Service Desk: tickets (done in Phase 1) + requests, SLA timers | — | Planned |
-| Service Catalog + Knowledge Base | — | Planned |
-| Change + Problem (+ CAB, approvals) | — | Planned |
-| Notifications (in-app + email) | — | Planned |
-| Advanced SLA + escalation engine (business hours, breach alerts) | **Tier 1** | Planned |
-| Email-to-ticket + email replies (Celery + IMAP/SMTP worker) | **Tier 1** | Planned |
-| Employee self-service portal `/portal` (org branding) | **Tier 1** | Planned |
-| SAML / SCIM / AD / Entra / LDAP, deprovisioning, group sync, access certification | **Tier 1** | Planned |
-| Data import/export | **Tier 1** | Planned |
-| Ticket templates, recurring tickets, collision detection, satisfaction surveys | Tier 2 | Planned |
-| Major incidents + parent/child tickets | Tier 2 | Planned |
-| On-call scheduling + workload balancing | Tier 2 | Planned |
+| Service Desk: tickets (done in Phase 1) + requests, SLA timers | — | Done (migrations 0004–0005; 26 ITSM + 18 SLA tests) |
+| Service Catalog + Knowledge Base | — | Done (migration 0004) |
+| Change + Problem (+ CAB, approvals) | — | Done (migration 0004) |
+| Notifications (in-app + email) | — | Done (migration 0004; shared `notification_service`) |
+| Advanced SLA + escalation engine (business hours, breach alerts) | **Tier 1** | Done (migration 0005; business-hours math, breach scan + escalation sweeps, ticket-create hook stamps due dates) |
+| Email-to-ticket + email replies (Celery + IMAP/SMTP worker) | **Tier 1** | Done (migration 0006; RFC822 ingest, threading, unknown-sender triage, SMTP-when-configured else logged) |
+| Employee self-service portal `/portal` (org branding) | **Tier 1** | Done (migration 0006; `portal_access` JWT sessions, own-records-only scoping) |
+| SAML / SCIM / AD / Entra / LDAP, deprovisioning, group sync, access certification | **Tier 1** | Done (migration 0007; SCIM v2, SAML metadata + real python3-saml ACS, OIDC discovery, directory sync framework — Entra real client, LDAP honest not-configured) |
+| Data import/export | **Tier 1** | Done (migration 0006; ServiceNow/Jira/CSV profiles, idempotent rows, CSV/JSON export with on-demand download) |
+| Asset lifecycle + software licensing (POs, vendors, warranties, assignments, check-in/out, transfers, lost/stolen, depreciation, retirement, disposal, license compliance/renewals) | **Tier 1** | Done in Phase 2 (migration 0007 — pulled forward from Phase 3 per the Phase 2 brief; employee-offboarding flow verified end-to-end) |
+| Ticket templates, recurring tickets, collision detection, satisfaction surveys | Tier 2 | Done (templates/recurring/surveys in migration 0004; collision detection not built — see below) |
+| Major incidents + parent/child tickets | Tier 2 | Done (migration 0004; major incidents + ticket_links) |
+| On-call scheduling + workload balancing | Tier 2 | Planned (not in Phase 2) |
+| Sweep org enumeration (`list_organization_ids()` SECURITY DEFINER fn) | — | Done (migration 0008; SLA + recurring sweeps use it) |
+
+**Phase 2 verification (Nov 26, 2026):** full suite **146/146 passing**
+(54 Phase 1 + 92 Phase 2: 26 ITSM, 18 SLA, 27 email/portal, 21
+identity/assets); `ruff check` + `ruff format` clean. Migration chain
+single head `0008`; 0007 table-order bug found by a builder and fixed
+at integration (verified `0006 → head` on a scratch DB with the 0007
+tables dropped). Live boot against local PostgreSQL 16 + Redis 7:
+`/health`, `/health/ready`, login → tickets → SLA policy → ticket
+create (due dates stamped by the hook, business-hours aware) →
+request → portal login → platform tenants; all four Celery sweeps run
+(SLA 2 orgs/3 tickets, recurring 2 orgs, temp grants, mailboxes
+`polled: 0` with none configured). Celery beat wired: SLA scan 5 min,
+mailbox poll 5 min, temp-grant expiry hourly, recurring sweep 15 min.
+
+**Phase 2 deferred / honest gaps:** collision detection (not built);
+ticket attachments are JSON metadata (`{filename, content_type,
+size_bytes, content_base64?}` — `python-multipart` is not installed, so
+no multipart upload yet; bytes go to storage only when configured,
+otherwise 503); SAML ACS validates assertions but mints no session
+(SSO session issuance is out of scope for Phase 2); portal login
+rejects MFA-enabled users (complete MFA via the main login); LDAP
+directory sync raises honest "not configured" (`ldap3` not installed);
+Entra sync needs tenant/client credentials; export to S3 needs the
+storage backend configured (otherwise on-demand download regenerates).
+
+**Outstanding dependencies (Phase 2):** frontend wiring (parent says
+when rounds settle); Docker unavailable in this VM (compose is code
+only); AWS/Cognito/staging still gated on infrastructure approval.
 
 ## Phase 3 — Endpoint + security engine (PLANNED)
 
@@ -73,7 +103,7 @@ this VM (compose is code-only).
 | Endpoint management, patching, software | — | Planned |
 | Vulnerability management: real Greenbone/OpenVAS engine, multi-engine architecture, real CVE + CISA KEV, remediation tickets, rescan verification | — | Planned |
 | CMDB / assets | — | Planned |
-| Asset lifecycle + software licensing (POs, vendors, warranties, assignments, check-in/out, transfers, lost/stolen, depreciation, retirement, disposal, license compliance/renewals) | **Tier 1** | Planned |
+| Asset lifecycle + software licensing (POs, vendors, warranties, assignments, check-in/out, transfers, lost/stolen, depreciation, retirement, disposal, license compliance/renewals) | **Tier 1** | Done in Phase 2 (migration 0007) |
 | Network ops + monitoring (discovery, topology, SNMP, syslog, outage alerts, service dependency mapping) | Tier 2 | Planned |
 | NULL Threat Intelligence workspace (builds on the live threat map) | Tier 3 | Planned |
 | NULL Infrastructure Intelligence (assets/endpoints/network/services/vulns/dependencies in one picture) | Tier 3 | Planned |

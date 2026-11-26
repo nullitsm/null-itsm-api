@@ -18,12 +18,25 @@ from slowapi.errors import RateLimitExceeded
 
 from app.config import get_settings
 from app.rate_limit import limiter
+from app.routers import assets as assets_router
 from app.routers import audit as audit_router
 from app.routers import auth as auth_router
+from app.routers import catalog as catalog_router
+from app.routers import changes as changes_router
+from app.routers import email as email_router
+from app.routers import exports as exports_router
 from app.routers import health as health_router
+from app.routers import identity as identity_router
+from app.routers import imports as imports_router
+from app.routers import knowledge as knowledge_router
+from app.routers import notifications as notifications_router
 from app.routers import organizations as org_router
 from app.routers import platform as platform_router
+from app.routers import portal as portal_router
+from app.routers import problems as problems_router
+from app.routers import requests as requests_router
 from app.routers import roles as roles_router
+from app.routers import sla as sla_router
 from app.routers import tickets as tickets_router
 from app.routers import users as users_router
 
@@ -107,6 +120,20 @@ app.include_router(roles_router.router)
 app.include_router(audit_router.router)
 app.include_router(tickets_router.router)
 app.include_router(platform_router.router)
+# Phase 2 routers (stubs until each workstream lands its endpoints).
+app.include_router(requests_router.router)
+app.include_router(catalog_router.router)
+app.include_router(knowledge_router.router)
+app.include_router(changes_router.router)
+app.include_router(problems_router.router)
+app.include_router(notifications_router.router)
+app.include_router(sla_router.router)
+app.include_router(email_router.router)
+app.include_router(portal_router.router)
+app.include_router(imports_router.router)
+app.include_router(exports_router.router)
+app.include_router(identity_router.router)
+app.include_router(assets_router.router)
 
 
 @app.get("/", include_in_schema=False)

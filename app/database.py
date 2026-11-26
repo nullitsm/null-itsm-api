@@ -148,3 +148,17 @@ def system_session() -> Iterator[Session]:
         raise
     finally:
         session.close()
+
+
+def list_organization_ids(session: Session) -> list[uuid.UUID]:
+    """Enumerate organization ids via the grant-checked SECURITY DEFINER
+    function ``list_organization_ids()`` (migration 0008).
+
+    The application role cannot read the ``organizations`` table without
+    an RLS context, so background sweeps (SLA, recurring tickets) use
+    this function, which runs as the owner and returns ids only. Call it
+    from a :func:`system_session`; per-org work must still open its own
+    RLS-scoped :func:`tenant_session`.
+    """
+    rows = session.execute(text("SELECT * FROM list_organization_ids()")).all()
+    return [r[0] for r in rows]

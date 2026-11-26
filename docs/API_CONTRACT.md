@@ -404,6 +404,209 @@ Admin role. The bootstrap script `scripts/bootstrap_platform_admin.py`
 creates the first Platform Super Admin (env `NULL_PLATFORM_ADMIN_EMAIL` /
 `NULL_PLATFORM_ADMIN_PASSWORD`, TOTP provisioning URI printed once).
 
+### 7.9 ITSM engine — Requests, Catalog, Knowledge, Changes, Problems, Notifications (Phase 2)
+
+| Method | Path | Auth / Perm | Notes |
+|---|---|---|---|
+| GET | `/api/v1/requests`, `/api/v1/requests/{id}` | Bearer + `requests:read` | List newest first |
+| POST | `/api/v1/requests` | Bearer + `requests:create` | `{title, description?, priority?, catalog_item_id?, form_data?}` → number `REQ-000001`, status `submitted` |
+| PATCH | `/api/v1/requests/{id}` | Bearer + `requests:create` | No `requests:update` code exists; update uses `requests:create` |
+| POST | `/api/v1/requests/{id}/approve` | Bearer + `requests:approve` | Sets `approved_by/at`, status `approved` |
+| POST | `/api/v1/requests/{id}/fulfill` | Bearer + `requests:fulfill` | Status `fulfilled` |
+| POST | `/api/v1/requests/{id}/cancel` | Bearer + `requests:create` | Status `cancelled` |
+| GET | `/api/v1/catalog/categories`, `/api/v1/catalog/categories/{id}` | Bearer + `catalog:read` | |
+| POST/PATCH/DELETE | `/api/v1/catalog/categories[/{id}]` | Bearer + `catalog:manage` | |
+| GET | `/api/v1/catalog/items`, `/api/v1/catalog/items/{id}` | Bearer + `catalog:read` | |
+| GET | `/api/v1/catalog/items/published` | Bearer + `catalog:read` | Published items only |
+| POST/PATCH/DELETE | `/api/v1/catalog/items[/{id}]` | Bearer + `catalog:manage` | |
+| POST | `/api/v1/catalog/items/{id}/publish`, `/api/v1/catalog/items/{id}/retire` | Bearer + `catalog:manage` | |
+| GET | `/api/v1/knowledge/articles`, `/api/v1/knowledge/articles/{id}` | Bearer + `knowledge:read` | Drafts visible only with `knowledge:create` or `knowledge:manage`; published GET increments `view_count` |
+| POST | `/api/v1/knowledge/articles` | Bearer + `knowledge:create` | Slug unique per org |
+| PATCH/DELETE | `/api/v1/knowledge/articles/{id}` | Bearer + `knowledge:manage` | |
+| POST | `/api/v1/knowledge/articles/{id}/publish` | Bearer + `knowledge:publish` | |
+| GET/POST | `/api/v1/knowledge/articles/{id}/feedback` | Bearer + `knowledge:read` | |
+| GET | `/api/v1/changes`, `/api/v1/changes/{id}`, `/api/v1/changes/{id}/approvals`, `/api/v1/changes/{id}/tasks` | Bearer + `changes:read` | Number `CHG-000001` |
+| POST/PATCH/DELETE | `/api/v1/changes[/{id}]` | Bearer + `changes:create` | No `changes:update` code exists |
+| POST | `/api/v1/changes/{id}/submit` | Bearer + `changes:create` | `draft` → `pending_approval` |
+| POST | `/api/v1/changes/{id}/approve`, `/api/v1/changes/{id}/reject` | Bearer + `changes:approve` | One decision per approver; reject returns the change to `draft` |
+| POST | `/api/v1/changes/{id}/execute`, `/api/v1/changes/{id}/rollback` | Bearer + `changes:execute` | Execute only from `approved` |
+| POST/PATCH/DELETE | `/api/v1/changes/{id}/tasks[/{task_id}]` | Bearer + `changes:create` | Implementation tasks |
+| GET | `/api/v1/problems`, `/api/v1/problems/{id}` | Bearer + `problems:read` | Number `PRB-000001` |
+| POST | `/api/v1/problems` | Bearer + `problems:create` | |
+| PATCH/DELETE | `/api/v1/problems/{id}` | Bearer + `problems:manage` | |
+| POST | `/api/v1/problems/{id}/link-known-error` | Bearer + `problems:manage` | Bidirectional link to a known error |
+| GET/POST/PATCH/DELETE | `/api/v1/problems/known-errors[/{id}]` | Bearer + `problems:read` / `problems:manage` | Code unique per org (`KE-0001`) |
+| GET/POST | `/api/v1/problems/incidents` | Bearer + `incidents:manage` | Major incidents (no `incidents:read` code exists) |
+| GET/PATCH | `/api/v1/problems/incidents/{id}` | Bearer + `incidents:manage` | |
+| GET | `/api/v1/notifications`, `/api/v1/notifications/{id}` | Bearer + `notifications:read` | Own notifications only |
+| POST | `/api/v1/notifications/read-all`, `/api/v1/notifications/{id}/read` | Bearer + `notifications:read` | |
+| GET | `/api/v1/tickets/{id}/comments`, `/api/v1/tickets/{id}/attachments`, `/api/v1/tickets/{id}/links` | Bearer + `tickets:read` | |
+| POST | `/api/v1/tickets/{id}/comments` | Bearer + `tickets:comment` | `{body, is_internal}` — internal notes and public replies both appear in the list |
+| POST | `/api/v1/tickets/{id}/attachments` | Bearer + `tickets:update` | **JSON, not multipart** (`python-multipart` is not installed): `{filename, content_type, size_bytes, content_base64?}`. Bytes go to storage when configured; when storage is unconfigured → **503 "storage not configured"** and nothing is stored. Metadata only. |
+| POST/DELETE | `/api/v1/tickets/{id}/links[/{link_id}]` | Bearer + `tickets:update` | `{target_type: ticket\|request\|change\|problem, target_id, link_type: parent\|child\|related\|caused_by\|blocks}` — target must exist in-org |
+| GET/POST/PATCH/DELETE | `/api/v1/tickets/templates[/{id}]` | Bearer + `templates:manage` | No `templates:read` code exists |
+| GET/POST/PATCH/DELETE | `/api/v1/tickets/recurring[/{id}]` | Bearer + `templates:manage` | Schedule is frequency-based (`{frequency: daily\|weekly\|monthly, time: "HH:MM", weekday?}`); created by the `null.tasks.sweep_recurring_tickets` beat task |
+| GET | `/api/v1/tickets/recurring/due` | Bearer + `templates:manage` | |
+| GET/POST | `/api/v1/tickets/surveys` | Bearer + `surveys:read` | |
+| GET/PATCH/DELETE | `/api/v1/tickets/surveys/{id}` | Bearer + `surveys:read` / `surveys:manage` | |
+| POST | `/api/v1/tickets/surveys/{id}/responses` | Bearer + `surveys:read` | Any org member; target must exist in-org |
+| GET | `/api/v1/tickets/surveys/{id}/responses` | Bearer + `surveys:read` | |
+
+`TicketOut` (Phase 2): the Phase 1 fields plus `first_response_due_at?`,
+`resolution_due_at?`, `first_response_at?`, `resolved_at?`,
+`sla_policy_id?`, `sla_breached` (default `false`).
+
+### 7.10 SLA engine — `/api/v1/sla` (Phase 2)
+
+| Method | Path | Auth / Perm | Notes |
+|---|---|---|---|
+| GET/POST | `/api/v1/sla/business-hours` | Bearer + `sla:read` / `sla:manage` | Schedule: `{mon: [["09:00","17:00"]], ...}` (days `mon`–`sun`, empty list = closed); `timezone` must be a valid IANA name; `holidays`: `["YYYY-MM-DD"]` |
+| GET/PATCH/DELETE | `/api/v1/sla/business-hours/{id}` | Bearer + `sla:read` / `sla:manage` | DELETE → 409 when a policy references the hours |
+| POST | `/api/v1/sla/business-hours/{id}/set-default` | Bearer + `sla:manage` | |
+| GET/POST | `/api/v1/sla/policies` | Bearer + `sla:read` / `sla:manage` | `response_minutes` / `resolution_minutes`: `{"critical": 30, "high": 60, "medium": 240, "low": 480}`; `applies_to`: `{"categories": [...], "priorities": [...]}` (empty = all) |
+| GET/PATCH/DELETE | `/api/v1/sla/policies/{id}` | Bearer + `sla:read` / `sla:manage` | |
+| POST | `/api/v1/sla/policies/{id}/set-default` | Bearer + `sla:manage` | |
+| GET | `/api/v1/sla/breaches?status=&ticket_id=` | Bearer + `sla:read` | |
+| GET | `/api/v1/sla/breaches/{id}` | Bearer + `sla:read` | |
+| POST | `/api/v1/sla/breaches/{id}/acknowledge` | Bearer + `sla:manage` | |
+| GET/POST | `/api/v1/sla/escalation-rules` | Bearer + `sla:read` / `sla:manage` | Trigger: `{event: sla_breach\|no_response\|no_update, after_minutes}`; actions: `[{type: priority_bump\|reassign\|notify, ...}]` |
+| GET/PATCH/DELETE | `/api/v1/sla/escalation-rules/{id}` | Bearer + `sla:read` / `sla:manage` | |
+| GET | `/api/v1/sla/escalation-rules/{id}/events` | Bearer + `sla:read` | |
+| GET | `/api/v1/sla/tickets/{ticket_id}` | Bearer + `sla:read` | The ticket's SLA state (due dates, first response, breached, policy) |
+| POST | `/api/v1/sla/tickets/{ticket_id}/recompute` | Bearer + `sla:manage` | Recompute due dates + stamp state |
+
+Due dates are stamped at ticket creation (hook in `POST /api/v1/tickets`)
+and re-derived by the `null.tasks.scan_sla_breaches` sweep (every 5 min),
+which also creates breach rows (idempotent per ticket+type), notifies,
+and evaluates escalation rules. Escalations are one-shot per
+(rule, ticket). Due-date math is business-hours aware (timezone, split
+windows, holidays) or calendar minutes when no business hours are set.
+
+### 7.11 Email-to-ticket — `/api/v1/email` (Phase 2)
+
+| Method | Path | Auth / Perm | Notes |
+|---|---|---|---|
+| GET | `/api/v1/email/mailboxes`, `/api/v1/email/mailboxes/{id}` | Bearer + `email:read` | Mailbox passwords are never returned |
+| POST/PATCH/DELETE | `/api/v1/email/mailboxes[/{id}]` | Bearer + `email:manage` | `{name, host, port?, use_tls?, username, password, folder?}` — password is Fernet-encrypted at rest (`NULL_FIELD_ENCRYPTION_KEY`; 503 when unconfigured) |
+| POST | `/api/v1/email/mailboxes/{id}/poll` | Bearer + `email:manage` | Poll one mailbox now |
+| GET | `/api/v1/email/messages`, `/api/v1/email/messages/{id}` | Bearer + `email:read` | |
+| POST | `/api/v1/email/messages/{id}/reply` | Bearer + `email:manage` | Sends via SMTP when configured, else logs (dev); records an outbound row + public ticket comment when linked |
+| POST | `/api/v1/email/messages/{id}/convert` | Bearer + `email:manage` | Convert an unknown-sender message into a ticket |
+
+Ingest rules (Celery `null.tasks.poll_mailboxes`, every 5 min, IMAP
+UNSEEN): threading by `In-Reply-To`/`References` or `[INC-000123]` in the
+subject; sender matching an active org member → new ticket with them as
+requester; **unknown senders are stored with status `received` and NO
+ticket** (manual triage via `/convert` — never auto-create tickets for
+strangers); duplicate `Message-ID` per org is deduped. Mailbox passwords
+and message bodies are never logged.
+
+### 7.12 Employee self-service portal — `/api/v1/portal` (Phase 2)
+
+Authenticated with a **portal token** (JWT type `portal_access`,
+60-minute lifetime, issued by `POST /portal/auth/login`, recorded in
+`portal_sessions` by SHA-256 hash). A portal token never authenticates a
+non-portal endpoint and an org `access` token never authenticates a
+portal endpoint. Portal login rejects MFA-enabled users with 401
+("complete MFA via the main login") — the portal has no MFA challenge
+step. Portal login defaults to the caller's earliest active membership,
+or an explicit `organization_id` when the caller has an active
+membership there.
+
+| Method | Path | Auth / Perm | Notes |
+|---|---|---|---|
+| POST | `/api/v1/portal/auth/login` | None | `{email, password, organization_id?}` → `{access_token, ...}` |
+| POST | `/api/v1/portal/auth/logout` | Bearer (portal) | Revokes the portal session |
+| GET | `/api/v1/portal/me` | Bearer (portal) + `portal:read` | Profile + org branding from `organizations.settings` |
+| GET | `/api/v1/portal/tickets`, `/api/v1/portal/tickets/{id}` | Bearer (portal) + `portal:read` | **Own records only** — another user's ticket is 404 |
+| POST | `/api/v1/portal/tickets` | Bearer (portal) + `portal:submit` | Requester is the caller |
+| GET | `/api/v1/portal/requests`, `/api/v1/portal/requests/{id}` | Bearer (portal) + `portal:read` | Own records only |
+| POST | `/api/v1/portal/requests` | Bearer (portal) + `portal:submit` | |
+| POST | `/api/v1/portal/requests/{id}/approve` | Bearer (portal) + `portal:approve` | Only the assigned approver (`assignee_id`); 403 otherwise, 400 when not awaiting approval |
+| GET | `/api/v1/portal/catalog` | Bearer (portal) + `portal:read` | Published items only |
+| GET | `/api/v1/portal/knowledge` | Bearer (portal) + `portal:read` | Published articles only |
+| GET | `/api/v1/portal/notifications` | Bearer (portal) + `portal:read` | Own notifications only |
+
+### 7.13 Data import / export — `/api/v1/imports`, `/api/v1/exports` (Phase 2)
+
+| Method | Path | Auth / Perm | Notes |
+|---|---|---|---|
+| POST | `/api/v1/imports` | Bearer + `imports:manage` | `{source_system: servicenow\|jira\|csv, rows: [...]}` — synchronous processing; returns the import with per-row outcomes |
+| POST | `/api/v1/imports/{id}/reprocess` | Bearer + `imports:manage` | Re-run; already-`imported` rows are skipped (idempotent on `(import_id, source_id)`) |
+| GET | `/api/v1/imports`, `/api/v1/imports/{id}` | Bearer + `imports:read` | Includes `import_records` outcomes |
+| POST | `/api/v1/exports` | Bearer + `exports:manage` | `{export_type: tickets\|requests\|users\|audit\|full, format: csv\|json}` — `full` is JSON-only (400 for CSV) |
+| GET | `/api/v1/exports`, `/api/v1/exports/{id}` | Bearer + `exports:read` | |
+| GET | `/api/v1/exports/{id}/download` | Bearer + `exports:read` | Streams the file; when S3 is unconfigured the content is regenerated live from the DB |
+
+Imported users are created as `User` + `invited` `Membership` + an
+`invitations` row (the existing invite path — no second invite flow);
+imported tickets/requests are created directly with source numbers
+preserved in `raw_data`. Mapping profiles: ServiceNow (`number`,
+`short_description`, `state`, `priority`, `caller_id` email), Jira
+(`key`, `summary`, `status`, `priority`, `reporter`), CSV-generic
+(`title`, `description`, `status`, `priority`, `requester_email`).
+
+### 7.14 Identity & directory — `/api/v1/identity` (Phase 2)
+
+| Method | Path | Auth / Perm | Notes |
+|---|---|---|---|
+| GET/POST | `/api/v1/identity/providers` | Bearer + `identity:read` / `identity:manage` | `{name, type: saml\|oidc, saml_entity_id?, saml_sso_url?, saml_certificate?, oidc_issuer?, oidc_client_id?, oidc_client_secret?}` — secrets Fernet-encrypted (503 when unconfigured) |
+| GET/PATCH/DELETE | `/api/v1/identity/providers/{id}` | Bearer + `identity:read` / `identity:manage` | |
+| POST | `/api/v1/identity/providers/{id}/set-default` | Bearer + `identity:manage` | |
+| GET | `/api/v1/identity/providers/{id}/metadata` | Bearer + `identity:read` | Generated SP metadata XML from the org's config; no certificate is ever invented — an unconfigured cert omits the `KeyDescriptor` |
+| POST | `/api/v1/identity/providers/{id}/acs` | **None (unauthenticated)** | Validates the SAML assertion with `python3-saml` (`OneLogin_Saml2_Auth`); garbage assertions → 400, provider without a certificate → 400, library missing → honest 501. **Validates and returns the subject but mints NO session** — SSO session issuance is out of scope for Phase 2 |
+| GET | `/api/v1/identity/providers/{id}/discover` | Bearer + `identity:read` | Fetches `{issuer}/.well-known/openid-configuration` via httpx (1h in-process cache); 502 when the issuer is unreachable |
+| GET/POST | `/api/v1/identity/scim-tokens` | Bearer + `identity:manage` | Create returns the token **once** (only the SHA-256 hash is stored) |
+| POST | `/api/v1/identity/scim-tokens/{id}/revoke` | Bearer + `identity:manage` | |
+| GET/POST | `/api/v1/identity/scim/v2/Users`, `/api/v1/identity/scim/v2/Groups` | **SCIM bearer token** (not JWT) | SCIM v2 subset: list (`filter`/`startIndex`/`count`), create, get, replace, patch, delete/deactivate. Auth is `Authorization: Bearer <raw SCIM token>` resolved by SHA-256 hash via a SECURITY DEFINER function; wrong/expired/revoked → 401; a token from org A can never touch org B. Provisioning = User (random unknowable password hash) + `invited` Membership + Invitation row; deactivate suspends the membership |
+| GET/PUT/PATCH/DELETE | `/api/v1/identity/scim/v2/Users/{id}`, `/api/v1/identity/scim/v2/Groups/{id}` | **SCIM bearer token** | |
+| POST | `/api/v1/identity/directory-sync` | Bearer + `identity:manage` | `{provider_id?, source: entra\|ad\|ldap\|scim}` — starts a recorded sync run |
+| GET | `/api/v1/identity/directory-sync/runs`, `/api/v1/identity/directory-sync/runs/{id}` | Bearer + `identity:read` | |
+| GET/POST | `/api/v1/identity/directory-groups` | Bearer + `identity:read` / `identity:manage` | `{provider_id?, external_id, name, role_id?}` — group→role mapping applied on sync |
+| PATCH | `/api/v1/identity/directory-groups/{id}` | Bearer + `identity:manage` | |
+| GET/POST | `/api/v1/identity/certifications` | Bearer + `identity:read` / `identity:manage` | Access-certification campaigns |
+| GET | `/api/v1/identity/certifications/{id}`, `/api/v1/identity/certifications/{id}/items` | Bearer + `identity:read` | |
+| POST | `/api/v1/identity/certifications/{id}/items/{item_id}/decide` | Bearer + `identity:manage` | `{decision: approved\|revoked}` — revoke removes the `user_roles` row; campaign completes when all items are decided |
+| GET/POST | `/api/v1/identity/temp-grants` | Bearer + `identity:read` / `identity:manage` | `{user_id, role_id, reason?, expires_at}` |
+| POST | `/api/v1/identity/temp-grants/{id}/revoke` | Bearer + `identity:manage` | Expired grants are revoked by the `null.tasks.expire_temp_grants` hourly sweep |
+| GET/POST | `/api/v1/identity/service-accounts` | Bearer + `identity:read` / `identity:manage` | Create returns the secret **once** (only the SHA-256 hash is stored) |
+| POST | `/api/v1/identity/service-accounts/{id}/rotate`, `/api/v1/identity/service-accounts/{id}/revoke` | Bearer + `identity:manage` | |
+| GET/POST | `/api/v1/identity/api-credentials` | Bearer + `identity:read` / `identity:manage` | Create returns the credential **once** |
+| POST | `/api/v1/identity/api-credentials/verify` | Bearer + `identity:read` | Proves a credential (hash match, unexpired, unrevoked → scopes); request-level API-key auth is Phase 4 |
+| POST | `/api/v1/identity/api-credentials/{id}/rotate`, `/api/v1/identity/api-credentials/{id}/revoke` | Bearer + `identity:manage` | |
+
+Directory sync: the SCIM source is a real local reconciliation (member
+counts + role mapping). Entra is real MS Graph client code but fails
+honestly (`not configured`) without tenant/client credentials. LDAP
+raises honestly (`ldap3` not installed). Group→role mapping reconciles
+`user_roles` against group membership on every sync.
+
+### 7.15 Assets & licensing — `/api/v1/assets` (Phase 2)
+
+| Method | Path | Auth / Perm | Notes |
+|---|---|---|---|
+| GET/POST | `/api/v1/assets` | Bearer + `assets:read` / `assets:manage` | `{asset_tag (unique per org), name, type: laptop\|desktop\|monitor\|phone\|server\|other, serial_number?, status?, department?, location?, purchase_order_id?, purchase_date?, purchase_price_cents?, depreciation_method?, depreciation_years?}` |
+| GET/PATCH/DELETE | `/api/v1/assets/{id}` | Bearer + `assets:read` / `assets:manage` | |
+| POST | `/api/v1/assets/{id}/assign`, `/api/v1/assets/{id}/check-out`, `/api/v1/assets/{id}/check-in`, `/api/v1/assets/{id}/transfer`, `/api/v1/assets/{id}/mark-lost`, `/api/v1/assets/{id}/mark-stolen`, `/api/v1/assets/{id}/recover`, `/api/v1/assets/{id}/retire`, `/api/v1/assets/{id}/dispose` | Bearer + `assets:manage` | Illegal transitions → 400; every transition writes an append-only `asset_lifecycle_events` row + audit |
+| GET | `/api/v1/assets/{id}/lifecycle`, `/api/v1/assets/{id}/assignments` | Bearer + `assets:read` | |
+| POST | `/api/v1/assets/offboard` | Bearer + `assets:manage` | `{user_id}` — one transaction: suspend membership → revoke sessions → one recovery ticket per assigned asset → assets to `in_repair` with lifecycle events + closed assignments → temp grants revoked → `asset.offboarding_completed` audit with the full report. Offboarding the org owner → 400 |
+| GET/POST | `/api/v1/assets/vendors` | Bearer + `vendors:read` / `vendors:manage` | |
+| GET/PATCH | `/api/v1/assets/vendors/{id}` | Bearer + `vendors:read` / `vendors:manage` | |
+| GET/POST | `/api/v1/assets/purchase-orders` | Bearer + `vendors:read` / `vendors:manage` | `po_number` unique per org |
+| GET/PATCH | `/api/v1/assets/purchase-orders/{id}` | Bearer + `vendors:read` / `vendors:manage` | |
+| GET/POST | `/api/v1/assets/warranties` | Bearer + `vendors:read` / `vendors:manage` | |
+| GET | `/api/v1/assets/warranties/{id}` | Bearer + `vendors:read` | |
+| GET | `/api/v1/assets/licenses/compliance` | Bearer + `licenses:read` | Seats used/available, expiring licenses (30 days), over-allocated list |
+| GET/POST | `/api/v1/assets/licenses` | Bearer + `licenses:read` / `licenses:manage` | `license_key` Fernet-encrypted (503 when unconfigured) |
+| GET/PATCH/DELETE | `/api/v1/assets/licenses/{id}` | Bearer + `licenses:read` / `licenses:manage` | |
+| POST | `/api/v1/assets/licenses/{id}/assign` | Bearer + `licenses:manage` | Blocked 400 at capacity; `override: true` assigns anyway and flips status to `exceeded` (explicit, never silent); revoking back under capacity restores `active` |
+| GET | `/api/v1/assets/licenses/{id}/assignments` | Bearer + `licenses:read` | |
+| POST | `/api/v1/assets/licenses/assignments/{id}/revoke` | Bearer + `licenses:manage` | |
+
+Depreciation: straight-line = price × (1 − elapsed/years); declining =
+double-declining fixed 2x rate; `none` = price. Recomputed on read; the
+stored column is only a snapshot.
+
 ## 8. Browser client mapping
 
 `frontend/null-api-client.js` (`NullApiClient`) implements every endpoint

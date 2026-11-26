@@ -9,8 +9,41 @@ logged.
 from __future__ import annotations
 
 import logging
+import smtplib
+
+from app.config import get_settings
 
 logger = logging.getLogger("null.email")
+
+
+def send_reply_email(to: str, subject: str, body: str) -> bool:
+    """Send a ticket reply. Returns True when it went out over SMTP.
+
+    When no SMTP host is configured this falls back to the dev behaviour
+    (logged, never sent) and returns False — the caller still records
+    the outbound message row either way.
+    """
+    settings = get_settings()
+    if not settings.smtp_host:
+        send_email(to, subject, body)
+        return False
+    message = f"From: {settings.email_from}\r\nTo: {to}\r\nSubject: {subject}\r\n\r\n{body}"
+    try:
+        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as smtp:
+            smtp.ehlo()
+            try:
+                smtp.starttls()
+                smtp.ehlo()
+            except smtplib.SMTPException:
+                pass  # server does not offer STARTTLS; continue plain
+            if settings.smtp_user:
+                smtp.login(settings.smtp_user, settings.smtp_password)
+            smtp.sendmail(settings.email_from, [to], message)
+    except (smtplib.SMTPException, OSError) as exc:
+        logger.warning("SMTP reply to %s failed: %s", to, exc)
+        return False
+    logger.info("EMAIL (smtp) to=%s subject=%s", to, subject)
+    return True
 
 
 def send_email(to: str, subject: str, body: str) -> None:

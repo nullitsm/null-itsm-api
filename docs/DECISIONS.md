@@ -93,3 +93,65 @@ The live frontend (`nullitsm/nullitsm.github.io`, baseline head
 This repo ships the API contract (`docs/API_CONTRACT.md`) and a shared JS
 client (`frontend/null-api-client.js`); pages are wired only when the
 parent says their rounds have settled. Never edit the frontend from here.
+
+## 2026-11-26 — Phase 2: SLA state is derived, not trusted
+`first_response_at` comes from the earliest non-requester comment,
+`resolved_at` from status transitions; due dates come from the resolved
+policy through business-hours math. The ticket-create hook stamps due
+dates immediately; the 5-minute breach sweep re-derives state for every
+open ticket, so a missed hook can never leave a ticket unstamped
+forever. Escalations are one-shot per (rule, ticket) — a rule never
+re-fires for the same ticket, so a bad rule cannot repeatedly bump
+priority.
+
+## 2026-11-26 — Phase 2: sweeps enumerate orgs through a SECURITY DEFINER function
+The application role cannot read `organizations` without an RLS context,
+so the SLA and recurring-ticket sweeps enumerate through
+`list_organization_ids()` (migration 0008, owner-owned, ids only),
+and the mail poller through its own narrower function. Per-org work is
+always RLS-scoped to the enumerated id. The old `Membership DISTINCT`
+enumeration pattern (same as Phase 1 `expire_memberships`) returns zero
+rows under `null_app` and must not be used for sweeps.
+
+## 2026-11-26 — Phase 2: unknown email senders never get auto-created tickets
+Inbound mail from an address that matches no active org member is stored
+with status `received` and no ticket, for manual triage via `/convert`.
+Auto-creating tickets for strangers would let anyone file tickets into
+any org whose mailbox address they know.
+
+## 2026-11-26 — Phase 2: attachments are JSON metadata, not multipart
+`python-multipart` is not installed, so `POST /tickets/{id}/attachments`
+takes JSON (`{filename, content_type, size_bytes, content_base64?}`).
+Bytes go to storage only when configured; otherwise 503 and nothing is
+stored. File content is never in the database. Multipart upload can be
+added later by installing `python-multipart` and switching the endpoint.
+
+## 2026-11-26 — Phase 2: SAML ACS validates but mints no session
+The ACS endpoint validates the assertion with `python3-saml` and returns
+the subject; it does not issue a session. SSO session issuance is a
+separate decision (session binding, MFA step-up for SAML logins). Portal
+login likewise rejects MFA-enabled users — the portal has no MFA
+challenge step. Neither gap is papered over with a fake login.
+
+## 2026-11-26 — Phase 2: license override is explicit, never silent
+Seat assignment at capacity is blocked (400). An admin may pass
+`override: true`, which assigns the seat AND flips the license status to
+`exceeded`. Over-allocation is therefore always visible in the
+compliance view, never silently permitted.
+
+## 2026-11-26 — Phase 2: asset lifecycle pulled forward from Phase 3
+The Phase 2 brief put asset lifecycle + software licensing in Tier 1,
+so migrations 0007 implements them in Phase 2. Endpoints, patching,
+vulnerabilities, and CMDB configuration items stay in Phase 3. The
+register and data model record the move so Phase 3 is not double-scoped.
+
+## 2026-11-26 — Phase 2: parallel builders, one shared test DB
+Four builders worked the same repo in parallel with a filesystem test
+lock (`scripts/run_tests_locked.sh` — bare `pytest` while siblings work
+recreates the shared test DB mid-run and produces noise). Rules learned:
+migrations first (the chain 0004→0007 must exist before anyone's suite
+can run), shared files owned by the coordinator only, cross-workstream
+imports lazy inside functions, and tests that mutate shared fixture
+state (e.g. suspending the fixture technician) must use a fresh user or
+restore the fixture — order-dependent failures are environmental, not
+code, until proven otherwise by an isolated re-run.

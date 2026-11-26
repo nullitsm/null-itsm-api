@@ -61,6 +61,11 @@ class Settings(BaseSettings):
     smtp_user: str = ""
     smtp_password: str = ""
 
+    # --- Field encryption (per-org mailbox / IdP secrets, Fernet) ---
+    # A URL-safe base64-encoded 32-byte key. Empty means field encryption
+    # is unavailable: endpoints that store encrypted secrets fail closed.
+    field_encryption_key: str = ""
+
     # --- Dev fixtures (NEVER true in production) ---
     seed_dev_fixtures: bool = False
 

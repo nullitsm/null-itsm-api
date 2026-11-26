@@ -42,8 +42,36 @@ celery_app.conf.update(
             "task": "null.tasks.expire_memberships",
             "schedule": 3600.0,
         },
+        # Phase 2 sweeps (beat entries wired at Phase 2 integration).
+        # Each sweep enumerates organizations itself (grant-checked
+        # SECURITY DEFINER function or its own narrow function) and then
+        # works per org in its own RLS-scoped tenant_session.
+        "scan-sla-breaches-5min": {
+            "task": "null.tasks.scan_sla_breaches",
+            "schedule": 300.0,
+        },
+        "poll-mailboxes-5min": {
+            "task": "null.tasks.poll_mailboxes",
+            "schedule": 300.0,
+        },
+        "expire-temp-grants-hourly": {
+            "task": "null.tasks.expire_temp_grants",
+            "schedule": 3600.0,
+        },
+        "sweep-recurring-tickets-15min": {
+            "task": "null.tasks.sweep_recurring_tickets",
+            "schedule": 900.0,
+        },
     },
 )
+
+# Register the Phase 2 task modules (importing them registers their
+# @celery_app.task definitions). Imported last: each module imports
+# celery_app itself, so this must run after the app exists.
+from app.tasks import email_tasks as _email_tasks  # noqa: F401,E402
+from app.tasks import identity_tasks as _identity_tasks  # noqa: F401,E402
+from app.tasks import recurring_tasks as _recurring_tasks  # noqa: F401,E402
+from app.tasks import sla_tasks as _sla_tasks  # noqa: F401,E402
 
 
 @celery_app.task(name="null.tasks.expire_memberships")
