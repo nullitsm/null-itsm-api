@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import audit as audit_mod
-from app.deps import Principal, get_db, require_permission
+from app.deps import Principal, get_db, get_user_principal, require_permission
 from app.models.itsm import Notification
 from app.services.itsm_service import get_org_row
 
@@ -68,7 +68,9 @@ def _own_or_404(session: Session, principal: Principal, notification_id: uuid.UU
 
 @router.get("", response_model=list[NotificationOut])
 def list_notifications(
-    session: Session = Depends(get_db), principal: Principal = Depends(require_permission("notifications:read"))
+    session: Session = Depends(get_db),
+    principal: Principal = Depends(require_permission("notifications:read")),
+    _user: Principal = Depends(get_user_principal),
 ):
     rows = session.execute(
         select(Notification)
@@ -83,7 +85,9 @@ def list_notifications(
 
 @router.post("/read-all", response_model=list[NotificationOut])
 def mark_all_read(
-    session: Session = Depends(get_db), principal: Principal = Depends(require_permission("notifications:read"))
+    session: Session = Depends(get_db),
+    principal: Principal = Depends(require_permission("notifications:read")),
+    _user: Principal = Depends(get_user_principal),
 ):
     now = datetime.now(timezone.utc)
     rows = session.execute(

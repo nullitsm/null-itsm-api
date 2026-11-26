@@ -25,7 +25,7 @@ from app.database import set_rls_context
 from app.deps import get_db
 from app.device_auth import DevicePrincipal, ensure_device_matches_path, get_device_principal
 from app.models.endpoints import AgentJob, Endpoint, EndpointInventory
-from app.services import agent_service
+from app.services import agent_service, webhook_service
 
 UTC = timezone.utc
 
@@ -197,6 +197,18 @@ def enroll(body: EnrollRequest, session: Session = Depends(get_db)):
         "enrolled_organization_id": str(org_id),
     }
     session.commit()
+    # Webhooks (Phase 4): best-effort post-commit fan-out; never fails
+    # the enrollment. Payload is plain data built before the commit.
+    webhook_service.emit_event(
+        org_id,
+        "endpoint.enrolled",
+        {
+            "endpoint_id": str(device_id),
+            "hostname": body.device.hostname,
+            "os_name": body.device.os,
+            "os_version": body.device.os_version,
+        },
+    )
     return out
 
 
@@ -356,6 +368,18 @@ def job_result(
         metadata={"endpoint_id": str(device_id), "type": job.type, "result": body.status},
     )
     # The result is recorded even when no handler is registered yet.
-    agent_service.dispatch_job_result(session, device.organization_id, job)
+    # dispatch returns the handler's return value (a dict) when one ran,
+    # False otherwise. Only the vuln_scan handler reports emittable
+    # findings: its "new_findings" is a LIST of payload dicts, while the
+    # patch handler's same-named key is an int COUNT — iterate only the
+    # list shape, so a patch result can never be mistaken for findings.
+    handled = agent_service.dispatch_job_result(session, device.organization_id, job)
     session.commit()
+    if isinstance(handled, dict):
+        new_findings = handled.get("new_findings")
+        if isinstance(new_findings, list):
+            for finding in new_findings:
+                webhook_service.emit_event(
+                    device.organization_id, "vulnerability.found", finding
+                )
     return {"status": "ok"}

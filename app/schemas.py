@@ -97,7 +97,32 @@ class OrganizationOut(BaseModel):
     slug: str
     is_active: bool
     is_dev_fixture: bool
+    contact_email: str | None = None
+    website: str | None = None
+    industry: str | None = None
+    size: str | None = None
     created_at: datetime
+
+
+class OrganizationRegisterRequest(BaseModel):
+    """Public registration: org profile + first administrator."""
+
+    org_name: str = Field(min_length=1, max_length=255)
+    org_email: EmailStr
+    website: str | None = Field(default=None, max_length=255)
+    industry: str | None = Field(default=None, max_length=100)
+    org_size: str | None = Field(default=None, pattern="^(1-10|11-50|51-200|201-1000|1000+)$")
+    admin_name: str = Field(min_length=1, max_length=255)
+    admin_email: EmailStr
+    password: str = Field(min_length=12)
+
+
+class OrganizationRegisterOut(BaseModel):
+    organization: OrganizationOut
+    user_id: uuid.UUID
+    # The new admin is signed in immediately (same shape as login).
+    access_token: str
+    refresh_token: str
 
 
 class PolicyUpdate(BaseModel):
@@ -123,20 +148,178 @@ class MembershipStatusUpdate(BaseModel):
     expires_at: datetime | None = None
 
 
+class MemberRemoveRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class RecoveryTicketOut(BaseModel):
+    ticket_id: uuid.UUID
+    number: str
+    asset_tag: str
+
+
+class MemberRemoveOut(BaseModel):
+    """Removal report: what the Remove action did, for the confirmation
+    dialog and the Organization Users row."""
+
+    user_id: uuid.UUID
+    email: str
+    full_name: str
+    membership_status: str  # "deactivated"
+    reason: str
+    invitations_cancelled: list[uuid.UUID]
+    assets_recovered: list[str]
+    tickets_created: list[RecoveryTicketOut]
+    sessions_revoked: int
+    temp_grants_revoked: int
+
+
 # --- Invitations ----------------------------------------------------------
 
 
 class InviteRequest(BaseModel):
     email: EmailStr
     role_ids: list[uuid.UUID] = Field(default_factory=list)
+    full_name: str = Field(default="", max_length=255)
+    department: str = Field(default="", max_length=100)
+    team: str = Field(default="", max_length=100)
+
+
+class DeliveryOut(BaseModel):
+    """One email delivery attempt, as reported by the API. Rendered bodies
+    are never exposed. ``dev_recorded`` means the message was written to
+    the local dev outbox and NOT actually sent."""
+
+    status: str  # sent | failed | dev_recorded
+    provider: str  # resend | dev
+    provider_message_id: str | None = None
+    attempts: int = 0
+    last_error: str | None = None
+    delivered: bool = False
+    dev_recorded: bool = False
 
 
 class InvitationOut(BaseModel):
     id: uuid.UUID
     email: str
+    full_name: str = ""
+    department: str = ""
+    team: str = ""
     status: str
     expires_at: datetime
     created_at: datetime
+    # Development mode only (no email provider configured): the accept
+    # link, returned on create/resend. Never returned when a provider is
+    # configured. Never stored; the token itself is never logged.
+    accept_url: str | None = None
+    # Latest delivery attempt for this invitation, if any.
+    delivery: DeliveryOut | None = None
+
+
+class InvitationLookupOut(BaseModel):
+    """Public invitation details for the accept page: name + email are
+    pre-filled and locked; the invitee cannot change org or roles."""
+
+    organization_name: str
+    organization_slug: str
+    email: str
+    full_name: str
+    department: str
+    team: str
+    roles: list[str] = []
+    status: str
+    expires_at: datetime
+
+
+# --- Departments & teams ---------------------------------------------------
+
+
+class DepartmentCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    description: str = ""
+
+
+class DepartmentOut(BaseModel):
+    id: uuid.UUID
+    organization_id: uuid.UUID
+    name: str
+    description: str
+    created_at: datetime
+
+
+class TeamCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    department_id: uuid.UUID | None = None
+    description: str = ""
+
+
+class TeamOut(BaseModel):
+    id: uuid.UUID
+    organization_id: uuid.UUID
+    department_id: uuid.UUID | None = None
+    name: str
+    description: str
+    created_at: datetime
+
+
+# --- Onboarding ------------------------------------------------------------
+
+
+class OnboardingOut(BaseModel):
+    organization_id: uuid.UUID
+    current_step: str
+    steps: dict[str, str] = {}
+    completed_at: datetime | None = None
+
+
+class OnboardingUpdate(BaseModel):
+    step: str
+    status: str  # complete | skipped | in_progress
+    data: dict = Field(default_factory=dict)
+
+
+# --- Dev email outbox (local testing only) ---------------------------------
+
+
+class OutboxOut(BaseModel):
+    id: uuid.UUID
+    organization_id: uuid.UUID | None = None
+    scope: str
+    to_email: str
+    subject: str
+    body: str
+    created_at: datetime
+
+
+# --- Platform invitations --------------------------------------------------
+
+
+class PlatformInviteRequest(BaseModel):
+    email: EmailStr
+    full_name: str = Field(min_length=1, max_length=255)
+    role_id: uuid.UUID
+
+
+class PlatformInvitationAcceptRequest(BaseModel):
+    token: str = Field(min_length=1)
+    password: str = Field(min_length=12)
+
+
+class PlatformInvitationOut(BaseModel):
+    id: uuid.UUID
+    email: str
+    full_name: str
+    role_id: uuid.UUID
+    role_name: str = ""
+    status: str
+    expires_at: datetime
+    created_at: datetime
+    # Development mode only (no email provider configured): the accept
+    # link, returned on create/resend. Never returned when a provider is
+    # configured. Never stored; the token itself is never logged.
+    accept_url: str | None = None
+    # Latest delivery attempt for this invitation, if any.
+    delivery: DeliveryOut | None = None
 
 
 # --- Users & Roles --------------------------------------------------------

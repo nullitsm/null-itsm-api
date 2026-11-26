@@ -17,7 +17,7 @@ import pyotp
 import pytest
 
 from app.security import decode_local_token, issue_platform_access_token
-from app.seed import DEV_PASSWORD
+from tests.factories import TEST_PASSWORD as DEV_PASSWORD
 
 PLATFORM_LOGIN = "/api/v1/platform/auth/login"
 PLATFORM_ME = "/api/v1/platform/auth/me"
@@ -743,7 +743,7 @@ def test_platform_tenant_list_and_org_admin_cannot_list(client, platform_admin, 
     assert {"acme", "globex"} <= set(by_slug)
     assert by_slug["acme"]["name"] == "Acme IT Services"
     assert by_slug["globex"]["name"] == "Globex Manufacturing"
-    assert by_slug["acme"]["is_dev_fixture"] is True
+    assert by_slug["acme"]["is_dev_fixture"] is False
 
     # Single-tenant read.
     acme_id = by_slug["acme"]["id"]

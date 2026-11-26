@@ -28,7 +28,12 @@ class Settings(BaseSettings):
     refresh_token_days: int = 7
     mfa_token_minutes: int = 5
     password_reset_minutes: int = 60
-    invitation_days: int = 7
+    # Invitation links expire after 48 hours (single-use, email-bound).
+    invitation_days: int = 2
+    # Public base URL used to build invitation accept links. The accept
+    # pages themselves live in the frontend track; the link is also
+    # returned to the inviting admin and recorded in the dev outbox.
+    app_url: str = "https://nullitsm.github.io"
 
     # --- Database ---
     database_url: str = "postgresql+psycopg://null_app:CHANGE_ME@localhost:5432/null_itsm"
@@ -60,14 +65,23 @@ class Settings(BaseSettings):
     smtp_port: int = 587
     smtp_user: str = ""
     smtp_password: str = ""
+    # Transactional provider for invitation + system mail ("none" = local
+    # dev outbox, never sent; "resend" = Resend API). The API key comes
+    # from the environment only (NULL_RESEND_API_KEY), never from code.
+    # When "resend" is selected but no key is set, the Muse-hosted
+    # surrogate channel is the key source instead (authd + egress proxy,
+    # see app/services/resend_surrogate.py); a host with neither fails
+    # loudly at send time.
+    email_provider: str = "none"
+    resend_api_key: str = ""
+    # Delivery retries (Celery): max attempts per message, backoff
+    # 60s, 120s, ... (60 * 2**(attempts-1)).
+    email_retry_max_attempts: int = 3
 
     # --- Field encryption (per-org mailbox / IdP secrets, Fernet) ---
     # A URL-safe base64-encoded 32-byte key. Empty means field encryption
     # is unavailable: endpoints that store encrypted secrets fail closed.
     field_encryption_key: str = ""
-
-    # --- Dev fixtures (NEVER true in production) ---
-    seed_dev_fixtures: bool = False
 
     # --- Rate limiting ---
     rate_limit_auth: str = "10/minute"
@@ -77,6 +91,13 @@ class Settings(BaseSettings):
     def _jwt_secret_must_be_set(cls, v: str) -> str:
         # Fail closed: the placeholder is never acceptable outside local dev.
         # Local dev runs with env=development; anything else must provide one.
+        return v
+
+    @field_validator("email_provider")
+    @classmethod
+    def _email_provider_must_be_known(cls, v: str) -> str:
+        if v not in ("none", "resend"):
+            raise ValueError("email_provider must be 'none' or 'resend'")
         return v
 
     @property

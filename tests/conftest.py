@@ -5,7 +5,9 @@ Setup order (session-scoped):
   1. Create the test database and the null_app / null_owner roles (as the
      postgres superuser).
   2. Run `alembic upgrade head` as the owner role.
-  3. Seed the two clearly-labelled dev fixture organizations.
+  3. Create the test organizations and test platform admin via the
+     test-only factory in tests/factories.py (fresh data, test DB only —
+     there is no seed module or fixture switch in the app).
   4. Serve the FastAPI app with TestClient (database URLs pointed at the
      test database via environment variables set BEFORE importing the app).
 
@@ -29,7 +31,6 @@ os.environ["NULL_ENV"] = "test"
 os.environ["NULL_JWT_SECRET"] = "test-only-jwt-secret-for-pytest"
 os.environ["NULL_DATABASE_URL"] = TEST_APP_URL
 os.environ["NULL_DATABASE_OWNER_URL"] = TEST_OWNER_URL
-os.environ["NULL_SEED_DEV_FIXTURES"] = "true"
 
 
 def _setup_database() -> None:
@@ -74,12 +75,12 @@ def _setup_database() -> None:
     cfg = AlembicConfig(os.path.join(os.path.dirname(os.path.dirname(__file__)), "alembic.ini"))
     alembic_command.upgrade(cfg, "head")
 
-    from app.seed import seed_dev_fixtures
+    from tests.factories import create_test_data
 
     engine = create_engine(TEST_OWNER_URL)
     session = sessionmaker(bind=engine)()
     try:
-        seed_dev_fixtures(session)
+        create_test_data(session)
     finally:
         session.close()
     os.environ["NULL_TEST_DB_READY"] = "1"
@@ -90,7 +91,7 @@ _setup_database()
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app.main import app, limiter  # noqa: E402
-from app.seed import DEV_PASSWORD  # noqa: E402
+from tests.factories import TEST_PASSWORD  # noqa: E402
 
 limiter.enabled = False
 
@@ -100,7 +101,7 @@ def client() -> TestClient:
     return TestClient(app)
 
 
-def _login(client: TestClient, email: str, password: str = DEV_PASSWORD) -> dict:
+def _login(client: TestClient, email: str, password: str = TEST_PASSWORD) -> dict:
     resp = client.post("/api/v1/auth/login", json={"email": email, "password": password})
     assert resp.status_code == 200, resp.text
     return resp.json()
@@ -134,7 +135,7 @@ def globex_tech(client) -> dict:
     return {"headers": {"Authorization": f"Bearer {data['access_token']}"}, "tokens": data}
 
 
-def _platform_login(client: TestClient, email: str, password: str = DEV_PASSWORD) -> dict:
+def _platform_login(client: TestClient, email: str, password: str = TEST_PASSWORD) -> dict:
     resp = client.post("/api/v1/platform/auth/login", json={"email": email, "password": password})
     assert resp.status_code == 200, resp.text
     return resp.json()
@@ -142,9 +143,9 @@ def _platform_login(client: TestClient, email: str, password: str = DEV_PASSWORD
 
 @pytest.fixture(scope="session")
 def platform_admin(client) -> dict:
-    """The dev platform super admin (platform@null.example.com).
+    """The test platform super admin (platform@null.example.com).
 
-    MFA is NOT enabled for this fixture user, so its login yields an
+    MFA is NOT enabled for this test user, so its login yields an
     mfa=true token directly. Never enable MFA on this user — tests that
     need an MFA-enabled platform user create a fresh one.
     """
@@ -210,7 +211,7 @@ def make_user_with_no_org(client: TestClient, email: str) -> dict:
             id=uuid.uuid4(),
             email=email,
             full_name="No Org User",
-            password_hash=hash_password(DEV_PASSWORD),
+            password_hash=hash_password(TEST_PASSWORD),
             email_verified=True,
         )
         # The user INSERT ... RETURNING is checked against the SELECT

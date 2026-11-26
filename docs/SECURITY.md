@@ -75,9 +75,21 @@ Rules enforced in the backend (not navigation visibility):
   requires the `mfa` claim (see §2).
 - Password reset: always-200, no enumeration (unknown emails get the same
   response). Invitation acceptance creates the user + membership + roles.
+- Registration: public `POST /api/v1/auth/register` (5/min) creates the
+  org + first admin + owner membership + Organization Administrator
+  grant + default departments + onboarding record, then signs the admin
+  in. It never creates a platform administrator; an existing admin
+  email is refused (409) so nobody can attach an org to someone else's
+  account. Invitations are single-use, SHA-256-hashed, bound to email
+  + org, and expire after 48 hours (`invitation_days = 2`); resend
+  rotates the token. Org and platform invitations are separate tables
+  and flows — an org invitation can never create a platform admin.
+  With SMTP unconfigured, invitation mail goes to the `dev_email_outbox`
+  table (local testing only) and the accept link is returned to the
+  inviting admin; the raw token is never logged.
 - Sessions expire; logout revokes; login anomalies are audited.
 - Rate limiting (slowapi, shared limiter in `app/rate_limit.py`): login
-  10/min, MFA challenge 10/min, password-reset request 5/min. Disabled
+  10/min, MFA challenge 10/min, registration 5/min, password-reset request 5/min. Disabled
   in tests via `limiter.enabled = False` on the one shared instance.
 
 ## 4. Authorization
@@ -150,8 +162,9 @@ Rules enforced in the backend (not navigation visibility):
   issuance is out of scope for Phase 2); portal login rejects
   MFA-enabled users (no MFA challenge step in the portal).
 - Collision detection is not built (Phase 2, Tier 2).
-- The dev fixtures (`DevPass123!@#`, `platform@null.example.com`) are
-  gated by `NULL_SEED_DEV_FIXTURES=true` and must never run in production.
+- No sample data: there are no dev fixtures or demo records in the repo
+  (removed Nov 26, 2026). A fresh database is empty; tests build their
+  own data in the test database via `tests/factories.py`.
 
 ## 9. Phase 2 additions (Nov 26, 2026)
 
@@ -238,3 +251,37 @@ Rules enforced in the backend (not navigation visibility):
   vulnerability findings come only from agent results, engine polls,
   or operator imports. CVE/KEV data comes only from the real NVD API
   and CISA KEV feed; a failed sync leaves the catalog unchanged.
+
+## 11. Phase 4 additions (Nov 26, 2026)
+
+- **API keys:** raw key shown once at creation; only the SHA-256 hash
+  is stored; lookups go through the SECURITY DEFINER function
+  `auth_get_api_key_by_hash` (exact-hash match). A key authenticates
+  only its own org — `X-Organization-Id`, when present, must match
+  the key's org (else 403) — and its scopes ARE permission codes, so
+  the same `require_permission` gates apply. A present-but-invalid
+  Bearer token is a 401 and never falls through to key auth. Endpoints
+  that need a user identity (`/auth/me`, logout, MFA, notification
+  list/read-all, `/organizations/mine`, change approve/reject) reject
+  API keys with 403 (`get_user_principal`). `last_used_at` is stamped
+  on successful key auth.
+- **Webhook secrets + integration credentials:** Fernet-encrypted at
+  rest under `NULL_FIELD_ENCRYPTION_KEY` (same store as vuln engine
+  passwords); creation fails closed without a key — there is no
+  plaintext fallback. Webhook payloads are HMAC-SHA256 signed
+  (`X-NULL-Signature`) with the per-webhook secret; the secret is
+  returned once at creation and never again. Delivery rows are
+  append-only.
+- **Status page public endpoint:** `GET /api/v1/status/public/{slug}`
+  needs no auth and returns incidents + updates only (resolved via the
+  SECURITY DEFINER `status_page_org_id_by_slug`); no other org data is
+  reachable through it.
+- **GRC honesty:** control `status` is derived only — an active
+  exception → `exception`, the latest assessment outcome →
+  `satisfied`/`failed`/`in_progress`, none → `not_assessed`.
+  `satisfied` records that an assessment passed; it is not a
+  certification claim and must never be presented as one.
+- **Automation cannot break writes:** automation rules and webhook
+  emission run after the ticket write commits; a failing rule action
+  is recorded on the run as failed/partial and never fails the ticket
+  write, and `emit_event` never raises into the request.

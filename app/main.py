@@ -19,6 +19,7 @@ from slowapi.errors import RateLimitExceeded
 from app.config import get_settings
 from app.rate_limit import limiter
 from app.routers import agents as agents_router
+from app.routers import apikeys as apikeys_router
 from app.routers import assets as assets_router
 from app.routers import audit as audit_router
 from app.routers import auth as auth_router
@@ -28,10 +29,14 @@ from app.routers import cmdb as cmdb_router
 from app.routers import email as email_router
 from app.routers import endpoints as endpoints_router
 from app.routers import exports as exports_router
+from app.routers import forms as forms_router
+from app.routers import grc as grc_router
 from app.routers import health as health_router
 from app.routers import identity as identity_router
 from app.routers import imports as imports_router
+from app.routers import integrations as integrations_router
 from app.routers import knowledge as knowledge_router
+from app.routers import linking as linking_router
 from app.routers import network as network_router
 from app.routers import notifications as notifications_router
 from app.routers import organizations as org_router
@@ -39,12 +44,15 @@ from app.routers import patching as patching_router
 from app.routers import platform as platform_router
 from app.routers import portal as portal_router
 from app.routers import problems as problems_router
+from app.routers import reporting as reporting_router
 from app.routers import requests as requests_router
 from app.routers import roles as roles_router
 from app.routers import sla as sla_router
 from app.routers import tickets as tickets_router
 from app.routers import users as users_router
 from app.routers import vulnerabilities as vulnerabilities_router
+from app.routers import webhooks as webhooks_router
+from app.routers import workflows as workflows_router
 
 settings = get_settings()
 
@@ -147,6 +155,19 @@ app.include_router(patching_router.router)
 app.include_router(vulnerabilities_router.router)
 app.include_router(cmdb_router.router)
 app.include_router(network_router.router)
+# Phase 4 — enterprise operations.
+app.include_router(apikeys_router.router)
+app.include_router(forms_router.router)
+app.include_router(reporting_router.dashboards_router)
+app.include_router(reporting_router.reports_router)
+app.include_router(webhooks_router.router)
+app.include_router(integrations_router.router)
+app.include_router(grc_router.router)
+app.include_router(linking_router.links_router)
+app.include_router(linking_router.releases_router)
+app.include_router(linking_router.flags_router)
+app.include_router(linking_router.status_router)
+app.include_router(workflows_router.router)
 
 
 @app.get("/", include_in_schema=False)

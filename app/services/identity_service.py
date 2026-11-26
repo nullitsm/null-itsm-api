@@ -211,7 +211,7 @@ def provision_scim_user(
     # New user: the users INSERT ... RETURNING is checked against the
     # SELECT policy, which passes only for the row's own id — so the RLS
     # user context must be the new user's id for the insert (same rule
-    # the seed fixtures follow), then restored to the actor.
+    # org provisioning follows), then restored to the actor.
     new_id = uuid.uuid4()
     set_rls_context(session, org_id, new_id)
     try:

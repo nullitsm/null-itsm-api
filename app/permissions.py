@@ -77,6 +77,8 @@ PERMISSIONS: list[tuple[str, str, str]] = [
     ("reports:manage", "reports", "Build and schedule reports"),
     # Administration
     ("org:manage", "admin", "Manage organization settings"),
+    # Users / admin
+    ("users:read", "admin", "View users, departments, and teams"),
     ("users:invite", "admin", "Invite technicians"),
     ("users:manage", "admin", "Manage users and memberships"),
     ("roles:manage", "admin", "Create, edit, and assign roles"),
@@ -156,6 +158,22 @@ PERMISSIONS: list[tuple[str, str, str]] = [
     # Status page & releases (Tier 2, Phase 4–5)
     ("statuspage:manage", "status_page", "Publish status page updates"),
     ("releases:manage", "releases", "Manage releases and feature flags"),
+    # Phase 4 — Enterprise operations (added Nov 26, 2026)
+    ("automation:read", "automation", "View automation rules and runs"),
+    ("automation:manage", "automation", "Create and manage automation rules"),
+    ("forms:read", "forms", "View custom forms and fields"),
+    ("forms:manage", "forms", "Create and manage custom forms and fields"),
+    ("dashboards:read", "dashboards", "View custom dashboards"),
+    ("dashboards:manage", "dashboards", "Create and manage custom dashboards"),
+    ("reports:manage", "reports", "Create and manage reports"),
+    ("reports:export", "reports", "Run and schedule report exports"),
+    ("webhooks:read", "webhooks", "View webhooks and deliveries"),
+    ("webhooks:manage", "webhooks", "Create and manage webhooks"),
+    ("apikeys:read", "developer", "View API keys"),
+    ("releases:read", "releases", "View releases and feature flags"),
+    ("statuspage:read", "status_page", "View the status page"),
+    ("links:read", "links", "View cross-module links"),
+    ("links:manage", "links", "Manage cross-module links"),
 ]
 
 READ_PERMISSIONS = {code for code, _, _ in PERMISSIONS if code.endswith(":read")}
@@ -171,6 +189,7 @@ ROLE_TEMPLATES: dict[str, dict] = {
         "access_level": "Privileged",
         "permissions": [
             "tickets:read",
+            "users:read",
             "endpoints:read",
             "endpoints:scan",
             "endpoints:deploy",
@@ -202,6 +221,7 @@ ROLE_TEMPLATES: dict[str, dict] = {
         "access_level": "Least Privilege",
         "permissions": [
             "tickets:read",
+            "users:read",
             "tickets:create",
             "tickets:update",
             "tickets:assign",
@@ -228,6 +248,7 @@ ROLE_TEMPLATES: dict[str, dict] = {
         "description": "Manage endpoints, patching, and software deployment.",
         "access_level": "Privileged",
         "permissions": [
+            "users:read",
             "endpoints:read",
             "endpoints:scan",
             "endpoints:deploy",
@@ -252,6 +273,7 @@ ROLE_TEMPLATES: dict[str, dict] = {
         "description": "View and remediate vulnerabilities; threat intel and compliance read.",
         "access_level": "Privileged",
         "permissions": [
+            "users:read",
             "vulnerabilities:read",
             "vulnerabilities:remediate",
             "vulnerabilities:manage",
@@ -269,6 +291,7 @@ ROLE_TEMPLATES: dict[str, dict] = {
         "description": "Manage changes, problems, and approvals.",
         "access_level": "Privileged",
         "permissions": [
+            "users:read",
             "changes:read",
             "changes:create",
             "changes:approve",

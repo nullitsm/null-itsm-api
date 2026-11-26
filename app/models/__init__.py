@@ -15,6 +15,7 @@ from app.models.cmdb_network import (
     ServiceDependency,
     TopologyLink,
 )
+from app.models.email import EmailDelivery
 from app.models.email_portal import (
     DataExport,
     DataImport,
@@ -29,6 +30,15 @@ from app.models.endpoints import (
     Endpoint,
     EndpointInventory,
     EnrollmentToken,
+)
+from app.models.forms import CustomField, CustomForm, FieldValue
+from app.models.grc import (
+    GrcAssessment,
+    GrcAssessmentControl,
+    GrcControl,
+    GrcControlMapping,
+    GrcEvidence,
+    GrcException,
 )
 from app.models.identity_assets import (
     AccessCertification,
@@ -49,6 +59,13 @@ from app.models.identity_assets import (
     TemporaryAccessGrant,
     Vendor,
     Warranty,
+)
+from app.models.integrations import (
+    ApiKey,
+    Integration,
+    IntegrationCredential,
+    Webhook,
+    WebhookDelivery,
 )
 from app.models.itsm import (
     CatalogCategory,
@@ -74,6 +91,13 @@ from app.models.itsm import (
     TicketLink,
     TicketTemplate,
 )
+from app.models.linking import (
+    EntityLink,
+    FeatureFlag,
+    Release,
+    StatusPageIncident,
+    StatusPageIncidentUpdate,
+)
 from app.models.patching import (
     Patch,
     PatchDeployment,
@@ -93,6 +117,14 @@ from app.models.platform_admin import (
     PlatformUserRole,
 )
 from app.models.rbac import Permission, Role, RolePermission, UserRole
+from app.models.registration import (
+    Department,
+    DevEmailOutbox,
+    OrgOnboarding,
+    PlatformInvitation,
+    Team,
+)
+from app.models.reporting import Dashboard, DashboardWidget, Report, ScheduledReport
 from app.models.sla import BusinessHours, EscalationEvent, EscalationRule, SlaBreach, SlaPolicy
 from app.models.ticket import Ticket, TicketCounter
 from app.models.vulnerabilities import (
@@ -103,6 +135,14 @@ from app.models.vulnerabilities import (
     VulnerabilityFinding,
     VulnScan,
 )
+from app.models.workflows import (
+    AutomationRule,
+    AutomationRun,
+    Workflow,
+    WorkflowRun,
+    WorkflowRunStep,
+    WorkflowVersion,
+)
 
 __all__ = [
     "AccessApproval",
@@ -111,11 +151,14 @@ __all__ = [
     "AgentJob",
     "AgentRelease",
     "ApiCredential",
+    "ApiKey",
     "Asset",
     "AssetAssignment",
     "AssetLifecycleEvent",
     "AuditLog",
     "AuthSession",
+    "AutomationRule",
+    "AutomationRun",
     "Base",
     "BusinessHours",
     "CatalogCategory",
@@ -128,21 +171,39 @@ __all__ = [
     "ChangeTask",
     "CiRelationship",
     "ConfigurationItem",
+    "CustomField",
+    "CustomForm",
     "CveCatalog",
+    "Dashboard",
+    "DashboardWidget",
     "DataExport",
     "DataImport",
+    "Department",
+    "DevEmailOutbox",
     "DirectoryGroup",
     "DirectoryGroupMembership",
     "DirectorySyncRun",
+    "EmailDelivery",
     "EmailMailbox",
     "EmailMessage",
     "Endpoint",
     "EndpointInventory",
     "EnrollmentToken",
+    "EntityLink",
     "EscalationEvent",
     "EscalationRule",
+    "FeatureFlag",
+    "FieldValue",
+    "GrcAssessment",
+    "GrcAssessmentControl",
+    "GrcControl",
+    "GrcControlMapping",
+    "GrcEvidence",
+    "GrcException",
     "IdentityProvider",
     "ImportRecord",
+    "Integration",
+    "IntegrationCredential",
     "Invitation",
     "InvitationRole",
     "KnowledgeArticle",
@@ -157,6 +218,7 @@ __all__ = [
     "NetworkInterface",
     "NetworkMetric",
     "Notification",
+    "OrgOnboarding",
     "Organization",
     "PasswordReset",
     "Patch",
@@ -167,6 +229,7 @@ __all__ = [
     "Permission",
     "PlatformAccessGrant",
     "PlatformAuditLog",
+    "PlatformInvitation",
     "PlatformPermission",
     "PlatformRole",
     "PlatformRolePermission",
@@ -178,19 +241,25 @@ __all__ = [
     "ProblemCounter",
     "PurchaseOrder",
     "RecurringTicket",
+    "Release",
     "RemediationTicket",
+    "Report",
     "RequestCounter",
     "Role",
     "RolePermission",
     "ScanResult",
+    "ScheduledReport",
     "ScimToken",
     "ServiceAccount",
     "ServiceDependency",
     "ServiceRequest",
     "SlaBreach",
     "SlaPolicy",
+    "StatusPageIncident",
+    "StatusPageIncidentUpdate",
     "Survey",
     "SurveyResponse",
+    "Team",
     "TemporaryAccessGrant",
     "Ticket",
     "TicketAttachment",
@@ -206,4 +275,10 @@ __all__ = [
     "VulnScan",
     "VulnerabilityFinding",
     "Warranty",
+    "Webhook",
+    "WebhookDelivery",
+    "Workflow",
+    "WorkflowRun",
+    "WorkflowRunStep",
+    "WorkflowVersion",
 ]

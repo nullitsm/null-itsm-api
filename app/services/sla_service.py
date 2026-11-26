@@ -319,7 +319,13 @@ def scan_breaches(session: Session, org_id: uuid.UUID) -> dict:
     Idempotent: a breach row is created only when no row exists for
     (org, ticket, breach_type) — the unique constraint is the backstop.
     Creates the breach row, a notification, and an SLA_BREACH_DETECTED
-    audit event per new breach. Returns counts.
+    audit event per new breach. Returns counts plus
+    ``breached_ticket_ids`` — the tickets that breached in THIS scan
+    (a ticket appears once even when both legs breach). Automation
+    rules do NOT fire here: the sweep task (``scan_sla_breaches``)
+    fires them after ``evaluate_escalations``, so an automation action
+    that changes a ticket cannot defeat an escalation rule's
+    conditions for the same breach.
     """
     now = _now()
     tickets = session.execute(
@@ -328,6 +334,7 @@ def scan_breaches(session: Session, org_id: uuid.UUID) -> dict:
     scanned = 0
     created = 0
     notified = 0
+    breached_ids: set[str] = set()
     for ticket in tickets:
         stamp_sla_state(session, org_id, ticket)
         scanned += 1
@@ -371,9 +378,15 @@ def scan_breaches(session: Session, org_id: uuid.UUID) -> dict:
                 metadata={"breach_type": breach_type, "breach_id": str(breach.id), "due_at": due_at.isoformat()},
             )
             ticket.sla_breached = True
+            breached_ids.add(str(ticket.id))
             created += 1
     session.flush()
-    return {"tickets_scanned": scanned, "breaches_created": created, "notifications_sent": notified}
+    return {
+        "tickets_scanned": scanned,
+        "breaches_created": created,
+        "notifications_sent": notified,
+        "breached_ticket_ids": sorted(breached_ids),
+    }
 
 
 # ---------------------------------------------------------------------------

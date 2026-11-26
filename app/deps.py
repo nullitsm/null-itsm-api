@@ -20,6 +20,19 @@ with 403 when the permission is missing. Denials are audited.
 grant permissions they themselves hold (an administrator cannot grant
 permissions beyond their authorized scope). The Administrator role holds
 everything, so this binds non-admin granters.
+
+API-key authentication (Phase 4)
+---------------------------------
+A request may authenticate with an ``X-Api-Key`` header instead of a
+bearer <redacted> when no bearer <redacted> is present. The key resolves to its
+owning organization and its scopes ARE permission codes, so the same
+``require_permission`` gates apply. An API-key caller is a
+:class:`Principal` with ``user_id=None`` (keys have no user identity)
+and ``api_key_id``/``api_key_name`` set; ``X-Organization-Id`` must
+match the key's org when present. Endpoints that need a real user
+("my" views, approvals, MFA, /me) depend on :func:`get_user_principal`,
+which rejects API-key callers with 403 instead of letting a NULL
+user id leak into a filter or an INSERT.
 """
 
 import uuid
@@ -55,14 +68,21 @@ class Forbidden(HTTPException):
 
 @dataclass
 class Principal:
-    """The authenticated caller, with their resolved organization."""
+    """The authenticated caller, with their resolved organization.
 
-    user_id: uuid.UUID
+    ``user_id`` is None for API-key callers: a key has no user identity,
+    only an owning organization and scopes. ``api_key_id`` /
+    ``api_key_name`` identify the key in that case.
+    """
+
+    user_id: uuid.UUID | None
     email: str
     organization_id: uuid.UUID
     organization_slug: str
     permissions: set[str] = field(default_factory=set)
     is_org_owner: bool = False
+    api_key_id: uuid.UUID | None = None
+    api_key_name: str | None = None
 
     def has(self, permission: str) -> bool:
         return permission in self.permissions
@@ -159,13 +179,64 @@ def get_user_from_token(request: Request, session: Session = Depends(get_db)) ->
     return user_id, claims.email
 
 
+def _api_key_principal(
+    session: Session,
+    raw_key: str,
+    x_organization_id: str | None,
+) -> Principal:
+    """Resolve an X-Api-Key header to a key-bound Principal.
+
+    The key's org is the tenant — an ``X-Organization-Id`` header that
+    disagrees is a cross-org escape attempt, not a switch. The key's
+    scopes are its permissions. ``authenticate_api_key`` RLS-scopes the
+    session to the key's org and stamps ``last_used_at`` (flushed here,
+    committed by the request).
+    """
+    from app.services import apikey_service
+    from app.services.apikey_service import ApiKeyAuthError
+
+    try:
+        key_principal = apikey_service.authenticate_api_key(session, raw_key)
+    except ApiKeyAuthError as exc:
+        raise Unauthorized(str(exc))
+    if x_organization_id:
+        try:
+            requested_org = uuid.UUID(x_organization_id)
+        except ValueError:
+            raise Forbidden("Invalid organization header")
+        if requested_org != key_principal.organization_id:
+            raise Forbidden("API key is bound to a different organization")
+    org = session.get(Organization, key_principal.organization_id)
+    return Principal(
+        user_id=None,
+        email="",
+        organization_id=key_principal.organization_id,
+        organization_slug=org.slug if org else "",
+        permissions=set(key_principal.scopes),
+        is_org_owner=False,
+        api_key_id=key_principal.key_id,
+        api_key_name=key_principal.key_name,
+    )
+
+
 def get_principal(
     request: Request,
     session: Session = Depends(get_db),
     x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
 ) -> Principal:
-    """Authenticate the bearer token and resolve the organization."""
-    token = _bearer_token(request)
+    """Authenticate the caller and resolve the organization.
+
+    Bearer token when present, else the ``X-Api-Key`` header (Phase 4).
+    A bearer token that is present but invalid is a 401 — it never falls
+    through to key auth.
+    """
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        raw_key = request.headers.get("X-Api-Key", "")
+        if not raw_key:
+            raise Unauthorized("Missing bearer token or API key")
+        return _api_key_principal(session, raw_key, x_organization_id)
+    token = auth[len("Bearer ") :].strip()
     try:
         claims = _decode_access_token(token)
     except jwt.ExpiredSignatureError:
@@ -231,6 +302,19 @@ def get_principal(
         permissions=permissions,
         is_org_owner=membership.is_owner,
     )
+
+
+def get_user_principal(principal: Principal = Depends(get_principal)) -> Principal:
+    """Require a real user session.
+
+    API-key callers have ``user_id=None`` and no user identity: they
+    must never reach an endpoint that filters by, or records, a user
+    id ("my" views, approvals, MFA, /me). Those endpoints depend on
+    this instead of :func:`get_principal` and get a clear 403.
+    """
+    if principal.user_id is None:
+        raise Forbidden("This endpoint requires a user session; API keys have no user identity")
+    return principal
 
 
 def require_permission(permission: str):

@@ -26,7 +26,7 @@
  *   } else if (result.status === 'org_required') {
  *     const tokens = await api.selectOrganization(result.org_select_token, result.organizations[0].id);
  *   } else if (result.status === 'no_org') {
- *     const org = await api.createOrganization({ name: 'Acme IT' });
+ *     const org = await api.createOrganization({ name: 'Example Org' });
  *     await api.selectOrganization(result.org_select_token, org.id);
  *   }
  *   // After login, tokens + org context are stored; every later call just works:

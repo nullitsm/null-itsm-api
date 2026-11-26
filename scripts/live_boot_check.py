@@ -1,25 +1,28 @@
-"""Live-boot end-to-end check for Phase 3 (coordinator scratch, not shipped).
+"""Live-boot end-to-end check (coordinator scratch, not shipped).
 
 Boots uvicorn against the `null_itsm_live` database (see
-scripts/live_boot_setup.py), then drives the real HTTP agent flow:
+scripts/live_boot_setup.py), provisions a real organization through the
+public API (no fixtures exist anywhere in this repo — the boot starts
+from an empty database), then drives the real HTTP agent flow:
 login -> enrollment token -> enroll -> heartbeat -> inventory -> issue
 patch_scan job -> poll -> result -> patch findings; manual-engine vuln
 import -> remediate -> verify -> agent rescan -> verified; CMDB + network
-smoke. Dev-only credentials are read from tests/conftest.py and
-app/seed.py at runtime, never typed here.
+smoke. Dev-only credentials are read from tests/conftest.py at runtime,
+never typed here.
 """
 
 import os
 import re
+import secrets
 import subprocess
 import sys
 import time
 import uuid
 
 import httpx
+from cryptography.fernet import Fernet
 
 CONF = open("tests/conftest.py").read()
-SEED = open("app/seed.py").read()
 
 
 def conf_url(name: str) -> str:
@@ -29,9 +32,15 @@ def conf_url(name: str) -> str:
 
 
 APP_URL = conf_url("TEST_APP_URL").replace("null_itsm_test", "null_itsm_live")
-DEV_PASSWORD = re.search(r'DEV_PASSWORD = "([^"]+)"', SEED).group(1)
-ADMIN_EMAIL = "alice@acme.example.com"
-BASE = "http://127.0.0.1:8001"
+# Port from the environment so a stale server on the default port can
+# never silently answer for us (a bind failure must fail loudly, not
+# let the checks run against someone else's backend).
+PORT = int(os.environ.get("NULL_LIVE_BOOT_PORT", "8001"))
+# Random per-run password for the live-boot user (created below); no
+# credential is stored in this repo.
+LIVE_PASSWORD = secrets.token_urlsafe(16)
+LIVE_EMAIL = f"liveboot-{uuid.uuid4().hex[:8]}@example.com"
+BASE = f"http://127.0.0.1:{PORT}"
 
 env = dict(os.environ)
 env["NULL_ENV"] = "development"
@@ -41,10 +50,13 @@ env["NULL_DATABASE_OWNER_URL"] = conf_url("TEST_OWNER_URL").replace("null_itsm_t
 env["NULL_REDIS_URL"] = "redis://localhost:6379/0"
 env["NULL_CELERY_BROKER_URL"] = "redis://localhost:6379/1"
 env["NULL_CELERY_RESULT_BACKEND"] = "redis://localhost:6379/2"
-env["NULL_SEED_DEV_FIXTURES"] = "false"
+# Webhook secrets + integration credentials are Fernet-encrypted at
+# rest and fail closed without a key (app/crypto.py) — generate a fresh
+# dev-only key per boot so webhook creation works in the live check.
+env["NULL_FIELD_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
 
 proc = subprocess.Popen(
-    [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8001"],
+    [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", str(PORT)],
     env=env,
     stdout=subprocess.PIPE,
     stderr=subprocess.STDOUT,
@@ -63,6 +75,8 @@ def check(name, ok, detail=""):
 try:
     with httpx.Client(timeout=15, trust_env=False) as c:
         for _ in range(30):
+            if proc.poll() is not None:
+                raise SystemExit(f"uvicorn exited early (port {PORT} likely in use); refusing to test another server")
             try:
                 r = c.get(f"{BASE}/health")
                 if r.status_code == 200:
@@ -75,13 +89,32 @@ try:
         r = c.get(f"{BASE}/health/ready")
         check("health/ready", r.status_code == 200, r.text[:200])
 
-        r = c.post(f"{BASE}/api/v1/auth/login", json={"email": ADMIN_EMAIL, "password": DEV_PASSWORD})
-        check("login", r.status_code == 200, r.text[:200])
-        token = r.json()["access_token"]
+        # --- Provision a real org through the public registration API ---
+        r = c.post(
+            f"{BASE}/api/v1/auth/register",
+            json={
+                "org_name": "Live Boot Org",
+                "org_email": "admin@liveboot.example",
+                "industry": "Technology",
+                "org_size": "1-10",
+                "admin_name": "Live Boot",
+                "admin_email": LIVE_EMAIL,
+                "password": LIVE_PASSWORD,
+            },
+        )
+        check("register org via API", r.status_code == 201, r.text[:200])
+        token = r.json().get("access_token")
         H = {"Authorization": f"Bearer {token}"}
         me = c.get(f"{BASE}/api/v1/auth/me", headers=H).json()
         org_id = me["organization_id"]
         check("auth/me org", bool(org_id), org_id[:8])
+        check("register returned tokens", bool(token), "access_token present")
+        r = c.get(f"{BASE}/api/v1/organizations/{org_id}/onboarding", headers=H)
+        check(
+            "onboarding profile complete",
+            r.status_code == 200 and r.json().get("steps", {}).get("profile") == "complete",
+            r.text[:200],
+        )
 
         # --- Agent flow ---
         r = c.post(f"{BASE}/api/v1/endpoints/enrollment-tokens", json={"expires_in_hours": 1}, headers=H)

@@ -21,8 +21,7 @@ characters. The script:
   it via POST /api/v1/platform/auth/mfa-verify. The URI is printed,
   never logged to a file.
 
-Runs against the owner database URL (see scripts/seed_dev.py for the
-session pattern): the owner role bypasses RLS, but the platform RLS
+Runs against the owner database URL: the owner role bypasses RLS, but the platform RLS
 context is still set explicitly before each insert, matching the
 application's insert discipline.
 """

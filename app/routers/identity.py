@@ -718,7 +718,7 @@ def _update_scim_user_name(
 
     The users UPDATE policy only passes for the row's own id, so the RLS
     user context is switched to the target user for the update (same rule
-    the seed fixtures follow for user creation), then restored.
+    org provisioning follows for user creation), then restored.
     """
     set_rls_context(session, org_id, user_id)
     try:

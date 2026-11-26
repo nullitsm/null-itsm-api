@@ -349,3 +349,155 @@ Notes:
 - **No client-side permission invention.** The permission catalog comes
   from `permissionCatalog()`; the caller's permissions come from
   `me()`. Never hard-code either list into a screen.
+
+## 9. Registration, onboarding, and invitations (backend ready, Nov 26, 2026)
+
+The frontend wizard for these flows is a separate track; the API below
+is the source of truth. Full curl examples live in
+`docs/DEV_SETUP.md` (§4–§8).
+
+### 9.1 Organization registration
+
+- `POST /api/v1/auth/register` (public, 5/min) with
+  `{org_name, org_email, website?, industry?, org_size?, admin_name,
+  admin_email, password}` (password min 12). Returns `201` with
+  `{organization, user_id, access_token, refresh_token}` — the admin is
+  signed in immediately; store the tokens exactly as §4 describes.
+- 409 when the admin email already exists: send the user to sign-in
+  instead (they create another org from the authenticated
+  `POST /api/v1/organizations`).
+- Registration never creates a platform administrator; do not offer
+  any platform path from the registration screen.
+- The response's `organization` includes the slug (auto-suffixed on
+  collision) and the profile fields; the onboarding record already
+  exists with `profile` complete and `current_step: "departments"`.
+
+### 9.2 Onboarding wizard
+
+- `GET /api/v1/organizations/{org_id}/onboarding` → current step +
+  per-step status. `PATCH` the same path with
+  `{step, status: complete|skipped|in_progress, data?}`.
+- Steps: `profile`, `departments`, `invite_technicians`,
+  `service_desk`, `business_hours_sla`, `assets_endpoints`, `finish`.
+  All but `profile`/`finish` are skippable. `finish` 400s while any
+  other step is still pending, and locks the record once complete.
+- Step data the wizard should send: `departments` →
+  `{departments: [{name, description}]}` (creates them);
+  `service_desk` → `{service_desk: {...}}` (merged into org settings);
+  `business_hours_sla` → `{business_hours?, sla_policy?}` or `{}`
+  (empty data creates the Mon–Fri 09:00–17:00 default calendar +
+  default SLA policy). `invite_technicians` / `assets_endpoints`
+  carry no data — the real work happens on the invitations / endpoints
+  screens; marking them complete just records progress.
+
+### 9.3 Technician invitations
+
+- Invite: `POST /api/v1/organizations/{org_id}/invitations` with
+  `{email, full_name, department, team, role_ids}` (org roles only).
+  The `201` response includes `accept_url` — ONLY in dev mode (no
+  email provider configured) is this how the admin reaches the link
+  (no real email is sent; the message is also in
+  `GET /organizations/{org_id}/outbox`). In configured mode
+  `accept_url` is `null` — the invitee gets the link by email. Never
+  log the URL.
+- Every invitation response carries `delivery`:
+  `{status: sent|failed|dev_recorded, provider, provider_message_id,
+  attempts, last_error, delivered, dev_recorded}`. Show the delivery
+  state on the invitations list (sent / failed / recorded locally).
+  A failed send still creates the pending invitation — surface "email
+  failed to send — resend it" with the error, never a success message.
+  A misconfigured provider answers 503 and creates nothing.
+- The invitee's accept page calls `GET /api/v1/auth/invitations/{token}`
+  (public) for the pre-filled, **locked** name/email/org/roles, then
+  `POST /api/v1/auth/invitations/accept` with `{token, full_name,
+  password}`. After acceptance, offer TOTP enrollment
+  (`POST /api/v1/auth/mfa/enroll`) before sign-in.
+- Resend: `POST .../invitations/{id}/resend` (new link, old link
+  dies). Revoke: `POST .../invitations/{id}/revoke`.
+- Invitations expire after 48 hours; an expired/used/revoked token
+  returns 400 on accept and 404 on lookup. Surface "this invitation
+  is no longer valid — ask your admin to resend it", not the raw error.
+
+### 9.4 Platform invitations (separate screen, separate flow)
+
+- `POST /api/v1/platform/admin-invitations` (platform token +
+  `platform:users:manage`, MFA) with `{email, full_name, role_id}`
+  (platform role only). Accept via
+  `POST /api/v1/platform/auth/invitations/accept`.
+- Never mix the two invitation UIs: an org invitation must never
+  offer a platform role, and a platform invitation must never mention
+  an organization. Only a Platform Super Admin may invite to the
+  Platform Super Admin role (403 otherwise).
+
+### 9.5 Remove a technician (Organization Users)
+
+- Remove action per row: `POST
+  /api/v1/organizations/{org_id}/members/{user_id}/remove` with
+  optional `{"reason"}`. Confirm first with a dialog showing the
+  consequences: **access revoked immediately, assigned devices
+  flagged for recovery, pending invites cancelled**.
+- The `200` response is the removal report — render it in the
+  confirmation result: `{user_id, email, full_name,
+  membership_status: "deactivated", reason,
+  invitations_cancelled: string[],
+  assets_recovered: string[] (asset tags),
+  tickets_created: [{ticket_id, number, asset_tag}],
+  sessions_revoked, temp_grants_revoked}`.
+- The member stays in the list with status `deactivated` (never
+  deleted); re-adding requires a fresh invitation.
+- Refusals (400, show the message): the organization owner, the last
+  Organization Administrator, an already-removed member. 403 for a
+  non-admin or cross-org call. Platform users are removed from the
+  Platform Admin Users screen via the existing suspend action
+  (`PATCH /api/v1/platform/admins/{user_id}/suspend`).
+
+## 10. Phase 4 — enterprise operations (backend ready, Nov 26, 2026)
+
+Full endpoint tables are in `docs/API_CONTRACT.md` §7.20–§7.27. Screen
+mapping for the frontend track:
+
+- **Workflows / automation** (`/api/v1/workflows`, `/api/v1/workflows/automation-rules`):
+  workflow builder (versioned; publish needs ≥ 1 step; runs show
+  per-step outcomes; retry re-runs only failed steps) and automation
+  rules (ticket-scoped triggers `ticket.created` / `ticket.updated` /
+  `ticket.priority_changed` / `sla_breach`; conditions on status,
+  priority, category, assignee, sla_breached; actions assign,
+  set_priority, set_status, add_comment, notify). Rules also fire
+  automatically on ticket create/update — the rule list shows runs
+  with what actually ran, including partial failures.
+- **Custom forms** (`/api/v1/forms`): form builder (fields carry
+  `key`, `label`, `field_type`, `required`, `options`); values are
+  submitted per ticket (`POST /forms/{id}/tickets/{ticket_id}/values`)
+  and validated server-side — show the 422 field errors inline.
+- **Dashboards / reports** (`/api/v1/dashboards`, `/api/v1/reports`):
+  dashboard builder with live widget data
+  (`GET /dashboards/{id}/data`); report builder over `tickets` /
+  `endpoints` / `vulnerabilities` with generate + CSV download
+  (`xlsx` returns 501 — do not offer it); scheduled reports take a
+  5-field cron + recipient emails and email a CSV per recipient.
+- **Webhooks** (`/api/v1/webhooks`): create with `name`, `target_url`,
+  `event_type`; the secret is returned **once** at creation — show it
+  in a copy-once dialog and never fetch it again. Delivery history +
+  test + manual retry are available. Events: `ticket.created`,
+  `ticket.updated`, `ticket.resolved`, `change.created`,
+  `change.approved`, `incident.declared`, `endpoint.enrolled`,
+  `vulnerability.found`.
+- **Integrations** (`/api/v1/integrations`): provider list first
+  (`GET /integrations/providers`), then create + set credentials
+  (never returned) + test connection.
+- **API keys** (`/api/v1/api-keys`): create with `name` + `scopes`
+  (permission codes); the raw key is returned **once** — copy-once
+  dialog. Keys authenticate with the `X-Api-Key` header instead of a
+  Bearer token; they cannot call user-identity endpoints (`/auth/me`,
+  notifications list, org switcher, change approve) — those 403 for
+  keys, so do not offer key auth for them.
+- **GRC** (`/api/v1/grc`): controls (framework `soc2` / `iso27001` /
+  `nist_csf` / `cis`, `code`, `title`), mappings, evidence (metadata
+  only — no file upload), assessments, exceptions. Control status is
+  derived server-side; never present `satisfied` as certification.
+- **Links / releases / feature flags / status page** (`/api/v1/links`,
+  `/api/v1/releases`, `/api/v1/feature-flags`, `/api/v1/status`):
+  link builder over allow-listed entity types; release list (duplicate
+  version → 409); flag list with per-org evaluate; status incidents +
+  updates, and the public page `GET /status/public/{org_slug}`
+  (no auth) for embedding.

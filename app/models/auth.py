@@ -47,6 +47,12 @@ class Invitation(Base):
         UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
     )
     email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)
+    # Invitation form fields: the invitee's name and org structure. The
+    # invitation carries the org + assigned roles; the invitee cannot
+    # change either at acceptance.
+    full_name: Mapped[str] = mapped_column(String(255), nullable=False, server_default="")
+    department: Mapped[str] = mapped_column(String(100), nullable=False, server_default="")
+    team: Mapped[str] = mapped_column(String(100), nullable=False, server_default="")
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
     invited_by_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False

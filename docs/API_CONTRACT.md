@@ -151,8 +151,9 @@ Permissions actually enforced by Phase 1 endpoints:
 | Permission | Used by |
 |---|---|
 | `org:manage` | `PATCH /organizations/{org_id}` |
-| `users:invite` | Invite / list / revoke invitations |
-| `users:manage` | List members, update member, list/get users, get user roles |
+| `users:read` | Get departments/teams, get onboarding |
+| `users:invite` | Invite / list / resend / revoke invitations, read the dev outbox |
+| `users:manage` | List members, update member, list/get users, get user roles, create departments/teams, update onboarding |
 | `roles:manage` | Policy get/set, access reviews, roles CRUD, assign/revoke, approvals |
 | `permissions:manage` | `PUT /roles/{role_id}/permissions` (note: distinct from `roles:manage`) |
 | `audit:read` | `GET /api/v1/audit` |
@@ -201,6 +202,7 @@ present, else the remote address). Redis-backed when available.
 |---|---|
 | `POST /api/v1/auth/login` | 10/minute |
 | `POST /api/v1/auth/mfa/challenge` | 10/minute |
+| `POST /api/v1/auth/register` | 5/minute |
 | `POST /api/v1/auth/password-reset/request` | 5/minute |
 
 No other Phase 1 endpoint is rate-limited. Exceeding a limit returns
@@ -254,6 +256,7 @@ URL. Response shapes use the Pydantic schemas in `app/schemas.py`.
 | Method | Path | Auth / Perm | Request body | Response |
 |---|---|---|---|---|
 | POST | `/api/v1/auth/login` | None (10/min) | `{email, password}` | `LoginResponse`: `{status: ok\|mfa_required\|org_required\|no_org, access_token?, refresh_token?, mfa_token?, org_select_token?, user_id?, organizations?}` |
+| POST | `/api/v1/auth/register` | None (5/min) | `{org_name, org_email, website?, industry?, org_size? (1-10\|11-50\|51-200\|201-1000\|1000+), admin_name, admin_email, password}` (password min 12) | `OrganizationRegisterOut` (201): `{organization, user_id, access_token, refresh_token}` — creates the org, first admin, owner membership, Organization Administrator grant, default settings + departments, and the onboarding record, then signs the admin in. 409 when the admin email already exists. **Never creates a platform administrator.** |
 | POST | `/api/v1/auth/mfa/challenge` | None (10/min) | `{mfa_token, code}` (6 digits) | `LoginResponse` (same shape as login) |
 | POST | `/api/v1/auth/select-organization` | Bearer `org_select_token` | `{organization_id}` | `TokenResponse`: `{access_token, refresh_token, token_type: "bearer"}` |
 | POST | `/api/v1/auth/switch-organization` | None (refresh token in body) | `{refresh_token, organization_id}` | `TokenResponse` |
@@ -262,6 +265,7 @@ URL. Response shapes use the Pydantic schemas in `app/schemas.py`.
 | POST | `/api/v1/auth/password-reset/request` | None (5/min) | `{email}` | `{status: "ok", detail: "If an account exists, a reset link was sent."}` — always, even for unknown emails |
 | POST | `/api/v1/auth/password-reset/confirm` | None | `{token, new_password}` (min 12 chars) | `{status: "ok"}` |
 | POST | `/api/v1/auth/invitations/accept` | None | `{token, full_name, password}` (password min 12) | `{status: "ok", user_id, organization_id, organization_slug}` |
+| GET | `/api/v1/auth/invitations/{token}` | None | — | `InvitationLookupOut`: `{organization_name, organization_slug, email, full_name, department, team, roles: string[], status, expires_at}` — the accept page's pre-filled, locked fields. 404 for an unknown/rotated token. |
 | POST | `/api/v1/auth/mfa/enroll` | Bearer | — | `{secret, otpauth_uri}` |
 | POST | `/api/v1/auth/mfa/verify-enrollment` | Bearer | `{code}` (6 digits) | `{status: "ok", mfa_enabled: true}` |
 | POST | `/api/v1/auth/mfa/disable` | Bearer | — | `{status: "ok", mfa_enabled: false}` |
@@ -271,17 +275,26 @@ URL. Response shapes use the Pydantic schemas in `app/schemas.py`.
 
 | Method | Path | Auth / Perm | Request body | Response |
 |---|---|---|---|---|
-| POST | `/api/v1/organizations` | Bearer (any authenticated user, incl. no-org) | `{name, slug?}` | `OrganizationOut` (201): `{id, name, slug, is_active, is_dev_fixture, created_at}` |
+| POST | `/api/v1/organizations` | Bearer (any authenticated user, incl. no-org) | `{name, slug?}` | `OrganizationOut` (201): `{id, name, slug, is_active, is_dev_fixture, contact_email?, website?, industry?, size?, created_at}` — an explicit `slug` that is taken returns 400; no slug → auto-suffixed (`acme-2`). |
 | GET | `/api/v1/organizations/mine` | Bearer | — | `OrganizationOut[]` (active memberships only) |
 | GET | `/api/v1/organizations/{org_id}` | Bearer | — | `OrganizationOut` (403 on org mismatch) |
 | PATCH | `/api/v1/organizations/{org_id}` | Bearer + `org:manage` | `{name?}` | `OrganizationOut` |
-| GET | `/api/v1/organizations/{org_id}/members` | Bearer + `users:manage` | — | `MemberOut[]`: `{user_id, email, full_name, status, is_owner, expires_at, joined_at}` |
-| PATCH | `/api/v1/organizations/{org_id}/members/{user_id}` | Bearer + `users:manage` | `{status: active\|suspended, expires_at?}` | `{status: "ok", membership_status}` |
+| GET | `/api/v1/organizations/{org_id}/members` | Bearer + `users:manage` | — | `MemberOut[]`: `{user_id, email, full_name, status, is_owner, expires_at, joined_at}` — `status` is `active` / `invited` / `suspended` / `deactivated`. Suspended and deactivated members stay listed (migration 0019). |
+| PATCH | `/api/v1/organizations/{org_id}/members/{user_id}` | Bearer + `users:manage` | `{status: active\|suspended\|deactivated, expires_at?}` | `{status: "ok", membership_status}` — `deactivated` audits `membership.removed`; `suspended` audits `membership.suspended`. Refused (400): deactivating the org owner or the last Organization Administrator. |
+| POST | `/api/v1/organizations/{org_id}/members/{user_id}/remove` | Bearer + `users:manage` | `{"reason"?}` (optional, max 500 chars) | `MemberRemoveOut` (200): `{user_id, email, full_name, membership_status: "deactivated", reason, invitations_cancelled: string[], assets_recovered: string[], tickets_created: [{ticket_id, number, asset_tag}], sessions_revoked, temp_grants_revoked}` — deactivates the membership (never a hard delete), revokes access immediately, runs the offboarding flow for assigned assets, cancels pending invitations for the email, audits `membership.removed`. Refused (400): the org owner, the last Organization Administrator, an already-removed member, a non-member. 403 for a non-admin or cross-org call. |
 | GET | `/api/v1/organizations/{org_id}/policy` | Bearer + `roles:manage` | — | Policy object (see below) |
 | PUT | `/api/v1/organizations/{org_id}/policy` | Bearer + `roles:manage` | Any of `{enforce_least_privilege, require_approval_for_elevated, periodic_access_review, access_expiration, access_review_schedule}` | Updated policy object |
-| POST | `/api/v1/organizations/{org_id}/invitations` | Bearer + `users:invite` | `{email, role_ids?: string[]}` | `InvitationOut` (201): `{id, email, status, expires_at, created_at}` — the invite token is emailed, never returned |
-| GET | `/api/v1/organizations/{org_id}/invitations` | Bearer + `users:invite` | — | `InvitationOut[]`, newest first |
+| POST | `/api/v1/organizations/{org_id}/invitations` | Bearer + `users:invite` | `{email, role_ids?: string[], full_name?, department?, team?}` | `InvitationOut` (201): `{id, email, full_name, department, team, status, expires_at, created_at, accept_url, delivery}` — the token is single-use, bound to email + org, expires in 48h. `accept_url` is returned ONLY in dev mode (no provider configured) for local testing (and written to the dev outbox); it is `null` in configured mode and is never logged. `delivery`: `{status: sent\|failed\|dev_recorded, provider, provider_message_id, attempts, last_error, delivered, dev_recorded}`. A failed provider submission still creates the (pending) invitation with `delivery.status == "failed"` — the response never claims a success that did not happen; a misconfigured provider answers 503 and creates nothing. Duplicate pending invitation → 400. |
+| GET | `/api/v1/organizations/{org_id}/invitations` | Bearer + `users:invite` | — | `InvitationOut[]`, newest first (no `accept_url`; each row carries its latest `delivery`) |
+| POST | `/api/v1/organizations/{org_id}/invitations/{invitation_id}/resend` | Bearer + `users:invite` | — | `InvitationOut` with a fresh token (and a fresh `accept_url` in dev mode) — the old token dies immediately (404 on lookup). 404 when the invitation does not exist in this org. |
 | POST | `/api/v1/organizations/{org_id}/invitations/{invitation_id}/revoke` | Bearer + `users:invite` | — | `{status: "ok"}` (404 when the invitation does not exist in this org) |
+| GET | `/api/v1/organizations/{org_id}/departments` | Bearer + `users:read` | — | `DepartmentOut[]`: `{id, organization_id, name, description, created_at}` |
+| POST | `/api/v1/organizations/{org_id}/departments` | Bearer + `users:manage` | `{name, description?}` | `DepartmentOut` (201). Duplicate name in the org → 400. |
+| GET | `/api/v1/organizations/{org_id}/teams` | Bearer + `users:read` | — | `TeamOut[]`: `{id, organization_id, department_id?, name, description, created_at}` |
+| POST | `/api/v1/organizations/{org_id}/teams` | Bearer + `users:manage` | `{name, department_id?, description?}` | `TeamOut` (201). Unknown department or duplicate team → 400. |
+| GET | `/api/v1/organizations/{org_id}/onboarding` | Bearer + `users:read` | — | `OnboardingOut`: `{organization_id, current_step, steps: {profile, departments, invite_technicians, service_desk, business_hours_sla, assets_endpoints, finish}, completed_at?}` |
+| PATCH | `/api/v1/organizations/{org_id}/onboarding` | Bearer + `users:manage` | `{step, status: complete\|skipped\|in_progress, data?}` | `OnboardingOut`. `profile`/`finish` cannot be skipped; `finish` requires all other steps complete or skipped; finished onboarding is locked (400). Step data: `departments` creates departments, `service_desk` merges into org settings, `business_hours_sla` creates default business hours (Mon–Fri 09:00–17:00) + default SLA policy. |
+| GET | `/api/v1/organizations/{org_id}/outbox` | Bearer + `users:invite` | — | `OutboxOut[]`, newest first — the local dev outbox (see `docs/DEV_SETUP.md` §5). The invitation link is in `body`. |
 | POST | `/api/v1/organizations/{org_id}/access-reviews` | Bearer + `roles:manage` | — | `{id, status, created_at}` (201) |
 | POST | `/api/v1/organizations/{org_id}/access-reviews/{review_id}/complete` | Bearer + `roles:manage` | — | `{id, status}` (404 when the review does not exist in this org) |
 
@@ -371,6 +384,12 @@ escalate to a privileged token.
 | POST | `/api/v1/platform/auth/mfa-enroll` | Bearer (platform) | — | `{secret, otpauth_uri}` |
 | POST | `/api/v1/platform/auth/mfa-verify` | Bearer (platform) | `{code}` (6 digits) | `{status: "ok", mfa_enabled: true}` |
 | GET | `/api/v1/platform/auth/me` | Bearer (platform) | — | `{platform_user_id, email, permissions: string[], mfa: boolean}` |
+| POST | `/api/v1/platform/auth/invitations/accept` | None | `{token, password}` (min 12) | `{status: "ok", platform_user_id, email}` — creates the platform admin with the role fixed at invite time. Single-use, email-bound, 48h expiry. Never touches any organization. |
+| POST | `/api/v1/platform/admin-invitations` | Bearer <redacted> `platform:users:manage` (MFA) | `{email, full_name, role_id}` (platform role only) | `PlatformInvitationOut` (201): `{id, email, full_name, role_id, role_name, status, expires_at, created_at, accept_url, delivery}` — `accept_url` only in dev mode, `null` in configured mode; `delivery` as above. 403 when inviting to Platform Super Admin without `platform:roles:manage`; duplicate pending invitation → 400. |
+| GET | `/api/v1/platform/admin-invitations` | Bearer <redacted> `platform:users:manage` (MFA) | — | `PlatformInvitationOut[]`, newest first (no `accept_url`) |
+| POST | `/api/v1/platform/admin-invitations/{id}/resend` | Bearer <redacted> `platform:users:manage` (MFA) | — | `PlatformInvitationOut` with a fresh `accept_url`; the old token dies. |
+| POST | `/api/v1/platform/admin-invitations/{id}/revoke` | Bearer <redacted> `platform:users:manage` (MFA) | — | `{status: "ok"}` |
+| GET | `/api/v1/platform/outbox` | Bearer <redacted> `platform:users:manage` (MFA) | — | `OutboxOut[]`, newest first — the platform dev outbox (scope `platform`). |
 | GET | `/api/v1/platform/permissions` | Bearer + `platform:roles:read` | — | `PlatformPermissionOut[]`: `{code, module, description}` (17 codes) |
 | GET | `/api/v1/platform/admins` | Bearer + `platform:users:read` | — | `PlatformUserOut[]`: `{id, email, full_name, is_active, mfa_enabled, source, review_status, roles: string[]}` |
 | POST | `/api/v1/platform/admins` | Bearer + `platform:users:manage` (MFA) | `{email, full_name, password}` (min 12) | `PlatformUserOut` (201) |
@@ -701,6 +720,178 @@ catalog unchanged). Nothing here invents findings.
 | POST/PATCH/DELETE | `/api/v1/network/certificates`, `/api/v1/network/certificates/{cert_id}` | Bearer `network:manage` | |
 | POST | `/api/v1/network/discover` | Bearer `network:discover` | **Real** discovery: ICMP/TCP ping sweep bounded to a /24 (default) — `{"cidr": "127.0.0.1/32"}` in tests; SNMP only when `pysnmp` is installed (otherwise `snmp_unavailable`, honestly reported). Existing devices by IP are updated in place (duplicate IPs resolve to the most recently seen device); new live hosts are created. DNS/DHCP and syslog ingestion are **not** built (Tier 2, see register) |
 | | `null.tasks.check_network_health` (Celery, hourly beat) | — | Marks stale `up` devices `down`, one outage event per downtime episode; idempotent per episode |
+
+### 7.20 Workflows + automation rules — `/api/v1/workflows` (Phase 4)
+
+Permissions: `automation:read` / `automation:manage` (both workflows and
+rules). Workflows are versioned: create snapshots v1, runs pin a version;
+publish requires ≥ 1 step; a failing step stops the run; retry skips
+succeeded steps. Automation rules are ticket-scoped only (conditions on
+status/priority/category/assignee_id/sla_breached; triggers
+`ticket.created`, `ticket.updated`, `ticket.priority_changed`,
+`sla_breach`). Ticket create/update fire rules automatically; the SLA
+sweep fires `sla_breach` rules **after** escalations (detect → escalate
+→ automate — see DEVELOPMENT_REGISTER §Phase 4).
+
+| Method | Path | Notes |
+|---|---|---|
+| GET/POST | `/api/v1/workflows` | List / create (steps: assign, set_priority, set_status, add_comment, notify) |
+| GET/PATCH/DELETE | `/api/v1/workflows/{workflow_id}` | |
+| POST | `/api/v1/workflows/{workflow_id}/publish`, `/archive` | Publish requires ≥ 1 step |
+| GET | `/api/v1/workflows/{workflow_id}/versions`, `/versions/{version_id}` | Version snapshots |
+| POST/GET | `/api/v1/workflows/{workflow_id}/run`, `/runs` | Start a run / list runs |
+| GET | `/api/v1/workflows/runs/{run_id}` | |
+| POST | `/api/v1/workflows/runs/{run_id}/retry` | Retries only failed/skipped steps |
+| POST | `/api/v1/workflows/automation-rules/evaluate` | Manual evaluate (body: trigger, entity) — the ticket routers also evaluate automatically |
+| GET/POST | `/api/v1/workflows/automation-rules` | List / create |
+| GET/PATCH/DELETE | `/api/v1/workflows/automation-rules/{rule_id}` | |
+| GET | `/api/v1/workflows/automation-rules/{rule_id}/runs`, `/api/v1/workflows/automation-runs` | Execution history; a run records exactly what ran, incl. partial failure |
+
+### 7.21 Custom forms — `/api/v1/forms` (Phase 4)
+
+Permissions: `forms:read` / `forms:manage`. Form targets are tickets
+only. Values are validated server-side (required, type, select options,
+number bounds, text length, pattern, ISO date, `user` must be an active
+org member).
+
+| Method | Path | Notes |
+|---|---|---|
+| GET/POST | `/api/v1/forms` | List / create (`target_type: ticket`) |
+| GET/PATCH/DELETE | `/api/v1/forms/{form_id}` | |
+| POST | `/api/v1/forms/{form_id}/fields` | Add a field (`key`, `label`, `field_type`, `required`, `options`) |
+| PATCH/DELETE | `/api/v1/forms/{form_id}/fields/{field_id}` | |
+| POST/GET | `/api/v1/forms/{form_id}/tickets/{ticket_id}/values` | Submit / read values (one value per field per ticket) |
+
+### 7.22 Dashboards + reports — `/api/v1/dashboards`, `/api/v1/reports` (Phase 4)
+
+Permissions: `dashboards:read` / `dashboards:manage`,
+`reports:read` / `reports:manage` / `reports:export`. Widget queries are
+real GROUP BYs over live data. Report entities: `tickets`,
+`endpoints`, `vulnerabilities`. CSV export works; `xlsx` returns an
+honest 501 (`openpyxl` not installed). Scheduled reports run on a 5-min
+sweep (`null.tasks.sweep_scheduled_reports`); each due schedule emails
+one CSV per recipient (`<slug>-YYYYMMDD-HHMM.csv`); a delivery failure
+is recorded in `email_deliveries` and the next run re-sends —
+`last_status` reflects generation only.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET/POST | `/api/v1/dashboards` | List / create |
+| GET/PATCH/DELETE | `/api/v1/dashboards/{dashboard_id}` | |
+| POST | `/api/v1/dashboards/{dashboard_id}/widgets` | |
+| PATCH/DELETE | `/api/v1/dashboards/{dashboard_id}/widgets/{widget_id}` | |
+| GET | `/api/v1/dashboards/{dashboard_id}/data`, `/dashboards/{dashboard_id}/widgets/{widget_id}/data` | Live widget data |
+| GET/POST | `/api/v1/reports` | List / create |
+| GET/PATCH/DELETE | `/api/v1/reports/{report_id}` | |
+| POST | `/api/v1/reports/{report_id}/generate` | Returns rows + CSV; `xlsx` → 501 |
+| GET/POST | `/api/v1/reports/{report_id}/schedules` | Cron (5-field, validated) + recipients |
+| PATCH/DELETE | `/api/v1/reports/{report_id}/schedules/{schedule_id}` | |
+| POST | `/api/v1/reports/{report_id}/schedules/{schedule_id}/run` | Run now (generates + emails) |
+
+### 7.23 Webhooks — `/api/v1/webhooks` (Phase 4)
+
+Permissions: `webhooks:read` / `webhooks:manage`. Delivery is a real
+httpx POST with HMAC-SHA256 signing (`X-NULL-Signature`), max 3
+attempts; deliveries are append-only rows. Events are emitted
+post-commit, best-effort, and never raise into the request:
+`ticket.created`, `ticket.updated`, `ticket.resolved`,
+`change.created`, `change.approved`, `incident.declared`,
+`endpoint.enrolled`, `vulnerability.found` (first-seen findings only;
+re-imports do not re-emit). Delivery is synchronous in-process —
+a slow subscriber delays the response (bounded by the 10s timeout).
+The webhook secret is generated server-side, Fernet-encrypted, and
+returned **once** at creation; creation fails closed with
+`"field encryption is not configured"` when
+`NULL_FIELD_ENCRYPTION_KEY` is unset (see §7.25 and DEV_SETUP §2).
+
+| Method | Path | Notes |
+|---|---|---|
+| GET/POST | `/api/v1/webhooks` | List / create (`name`, `target_url`, `event_type`) |
+| GET/PATCH/DELETE | `/api/v1/webhooks/{webhook_id}` | |
+| GET | `/api/v1/webhooks/deliveries`, `/api/v1/webhooks/{webhook_id}/deliveries` | Delivery history |
+| POST | `/api/v1/webhooks/{webhook_id}/test` | Sends a test event |
+| POST | `/api/v1/webhooks/{webhook_id}/deliveries/{delivery_id}/retry` | Manual redelivery |
+
+### 7.24 Integrations — `/api/v1/integrations` (Phase 4)
+
+Permissions: `integrations:read` / `integrations:manage`. Provider
+registry: Entra ID, Intune, Greenbone, Defender, Slack, Teams, GitHub,
+Power BI, `generic_http` — generic HTTP only, no per-vendor drivers.
+Credentials are Fernet-encrypted (same fail-closed rule as webhooks).
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/v1/integrations/providers` | The provider registry |
+| GET/POST | `/api/v1/integrations` | List / create (`provider`, `name`) |
+| GET/PATCH/DELETE | `/api/v1/integrations/{integration_id}` | |
+| GET/POST | `/api/v1/integrations/{integration_id}/credentials` | Set credentials (never returned; `has_credentials` only) |
+| POST | `/api/v1/integrations/{integration_id}/test-connection` | Real HTTP check against the provider |
+
+### 7.25 API keys — `/api/v1/api-keys` (Phase 4)
+
+Permissions: `apikeys:read` / `apikeys:manage`. The raw key is shown
+**once** at creation; only its SHA-256 hash is stored. Keys authenticate
+via the `X-Api-Key` header when no Bearer token is present (a
+present-but-invalid Bearer is a 401 and never falls through to key
+auth). Key scopes ARE permission codes, so the same
+`require_permission` gates apply. `X-Organization-Id`, when present,
+must match the key's org (else 403). Endpoints that need a user identity
+(`/auth/me`, logout, MFA, notification list/read-all,
+`/organizations/mine`, change approve/reject) reject API keys with 403.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET/POST | `/api/v1/api-keys` | List / create (`name`, `scopes`) → response carries the raw key once |
+| GET | `/api/v1/api-keys/{key_id}` | Metadata only — never the key |
+| DELETE | `/api/v1/api-keys/{key_id}` | Revoke (also stamps `last_used_at` on successful auth) |
+
+### 7.26 GRC — `/api/v1/grc` (Phase 4)
+
+Permissions: `compliance:read` / `compliance:manage`. Frameworks:
+`soc2`, `iso27001`, `nist_csf`, `cis`. Control `status` is **derived
+only**: an active exception → `exception`; the latest assessment
+passed/failed/in_progress → `satisfied`/`failed`/`in_progress`; none →
+`not_assessed`. `satisfied` is a recorded assessment outcome, never a
+certification claim. No file upload for evidence.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/v1/grc/summary` | Derived control counts |
+| GET/POST | `/api/v1/grc/controls` | List / create (`framework`, `code`, `title`) |
+| GET/PATCH/DELETE | `/api/v1/grc/controls/{control_id}` | |
+| POST | `/api/v1/grc/controls/{control_id}/mappings` | Framework mappings |
+| DELETE | `/api/v1/grc/controls/{control_id}/mappings/{mapping_id}` | |
+| GET/POST | `/api/v1/grc/controls/{control_id}/evidence` | Evidence rows (metadata only — no file upload) |
+| DELETE | `/api/v1/grc/evidence/{evidence_id}` | |
+| GET/POST | `/api/v1/grc/controls/{control_id}/exceptions` | Exceptions (effective status derived) |
+| POST | `/api/v1/grc/exceptions/{exception_id}/revoke` | |
+| GET | `/api/v1/grc/controls/{control_id}/exceptions` | |
+| GET/POST | `/api/v1/grc/assessments` | List / create |
+| GET/PATCH | `/api/v1/grc/assessments/{assessment_id}` | |
+
+### 7.27 Cross-module links, releases, feature flags, status page — `/api/v1/links`, `/api/v1/releases`, `/api/v1/feature-flags`, `/api/v1/status` (Phase 4)
+
+Linkable entities: `ticket`, `vulnerability_finding`, `endpoint`,
+`patch_deployment`, `asset`, `change`. Link types: `remediates`,
+`caused_by`, `verifies`, `affects`, `assigned_to`, `relates_to`.
+Cross-org links → 404. Feature-flag evaluation is deterministic per
+org: `sha256(org_id:key) % 100` vs `rollout_percent` — no per-user
+targeting. The status page public endpoint needs no auth.
+
+| Method | Path | Auth / Perm | Notes |
+|---|---|---|---|
+| GET/POST | `/api/v1/links` | Bearer `links:read` / `links:manage` | Create (`from_type`, `from_id`, `to_type`, `to_id`, `link_type`) |
+| GET | `/api/v1/links/graph` | Bearer `links:read` | Neighbors of an entity (`?type=…&id=…`) |
+| DELETE | `/api/v1/links/{link_id}` | Bearer `links:manage` | |
+| GET/POST | `/api/v1/releases` | Bearer `releases:read` / `releases:manage` | Duplicate version → 409 |
+| GET/PATCH/DELETE | `/api/v1/releases/{release_id}` | Bearer `releases:read` / `releases:manage` | |
+| GET/POST | `/api/v1/feature-flags` | Bearer `releases:read` / `releases:manage` | |
+| GET/PATCH/DELETE | `/api/v1/feature-flags/{key}` | Bearer `releases:read` / `releases:manage` | |
+| GET | `/api/v1/feature-flags/{key}/evaluate` | Bearer `releases:read` | `{enabled, bucket, rollout_percent}` for the current org |
+| GET/POST | `/api/v1/status/incidents` | Bearer `statuspage:read` / `statuspage:manage` | |
+| GET/PATCH/DELETE | `/api/v1/status/incidents/{incident_id}` | Bearer `statuspage:read` / `statuspage:manage` | |
+| POST | `/api/v1/status/incidents/{incident_id}/updates` | Bearer `statuspage:manage` | |
+| GET | `/api/v1/status/public/{org_slug}` | **No auth** | Public status page: incidents + updates only |
 
 ## 8. Browser client mapping
 

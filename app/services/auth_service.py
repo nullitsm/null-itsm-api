@@ -531,6 +531,16 @@ def accept_invitation(session: Session, token: str, full_name: str, password: st
         outcome="success",
         metadata={"email": invitation.email},
     )
+    audit_mod.write_audit(
+        session,
+        organization_id=org_id,
+        actor_id=user.id,
+        action=audit_mod.INVITATION_ACCEPTED,
+        resource_type="invitation",
+        resource_id=str(invitation.id),
+        outcome="success",
+        metadata={"email": invitation.email, "role_ids": [str(ir.role_id) for ir in role_rows]},
+    )
     # The organization row is readable only now that the membership
     # exists (the org SELECT policy is membership- or creator-gated).
     # The session runs with autoflush=False, so flush the pending

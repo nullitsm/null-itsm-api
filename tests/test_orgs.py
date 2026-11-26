@@ -6,7 +6,7 @@ from __future__ import annotations
 import secrets
 import uuid
 
-from app.seed import DEV_PASSWORD
+from tests.factories import TEST_PASSWORD as DEV_PASSWORD
 
 
 def _login(client, email, password=DEV_PASSWORD):
@@ -75,32 +75,20 @@ def test_invite_and_accept_flow(client, acme_admin, org_ids):
     assert resp.status_code == 201, resp.text
     invitation_id = resp.json()["id"]
 
-    # The API never returns the raw token; create a second invitation row
-    # with a KNOWN token (same shape the service writes) to exercise accept.
+    # The API never returns the raw token; retoken the API-created
+    # invitation row with a KNOWN token to exercise accept. Only one
+    # pending invitation per (org, email) may exist (migration 0018
+    # enforces it with a partial unique index), so no second row is
+    # created — the API invite already assigned the role.
     token = new_opaque_token()
     engine = create_engine(TEST_OWNER_URL)
     session = sessionmaker(bind=engine)()
     try:
-        from datetime import datetime, timedelta, timezone
-
         from app.database import set_rls_context
-        from app.models.auth import InvitationRole
 
         set_rls_context(session, uuid.UUID(org_ids["acme"]), None)
-        inv = Invitation(
-            organization_id=uuid.UUID(org_ids["acme"]),
-            email=invitee,
-            token_hash=hash_token(token),
-            invited_by_id=uuid.UUID(client.get("/api/v1/auth/me", headers=acme_admin["headers"]).json()["user_id"]),
-            expires_at=datetime.now(timezone.utc) + timedelta(days=7),
-        )
-        session.add(inv)
-        session.flush()
-        session.add(
-            InvitationRole(
-                invitation_id=inv.id, role_id=uuid.UUID(sd_role["id"]), organization_id=uuid.UUID(org_ids["acme"])
-            )
-        )
+        inv = session.get(Invitation, uuid.UUID(invitation_id))
+        inv.token_hash = hash_token(token)
         session.commit()
     finally:
         session.close()

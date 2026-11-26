@@ -127,3 +127,137 @@ def poll_mailboxes(org_id: str | None = None) -> dict:
         ingested += result["ingested"]
         errors.extend(result["errors"])
     return {"polled": polled, "ingested": ingested, "errors": errors}
+
+
+# --- Delivery retries ---------------------------------------------------------
+# A failed provider send is recorded on the EmailDelivery row and a retry
+# is enqueued (backoff 60s, 120s, ...). The retry re-sends the STORED
+# rendered bodies, so the identical email goes out without ever needing
+# the raw invitation token again. Tenant scope travels in the task args.
+
+
+def _audit_retry_event(session: Session, row, scope: str, action: str, outcome: str, error: str | None) -> None:
+    """One audit event for a retry attempt, in the right audit log."""
+    metadata = {
+        "to": row.to_email,
+        "subject": row.subject,
+        "template": row.template,
+        "provider": row.provider,
+        "provider_message_id": row.provider_message_id,
+        "attempts": row.attempts,
+        "error": error,
+    }
+    if scope == "platform":
+        from app.services.platform_service import write_platform_audit
+
+        write_platform_audit(
+            session,
+            actor_id=row.created_by_id,
+            action=action,
+            resource_type="email_delivery",
+            resource_id=str(row.id),
+            organization_id=None,
+            outcome=outcome,
+            metadata=metadata,
+        )
+    else:
+        from app.audit import write_audit
+
+        write_audit(
+            session,
+            organization_id=row.organization_id,
+            actor_id=row.created_by_id,
+            action=action,
+            resource_type="email_delivery",
+            resource_id=str(row.id),
+            outcome=outcome,
+            metadata=metadata,
+        )
+
+
+@celery_app.task(name="null.tasks.retry_email_delivery")
+def retry_email_delivery(
+    delivery_id: str,
+    organization_id: str | None = None,
+    scope: str = "org",
+    created_by_id: str | None = None,
+) -> dict:
+    """Re-send one failed delivery from its stored rendered bodies.
+
+    Only rows with status ``failed`` and attempts remaining are retried.
+    A row already ``sent`` (or recorded in dev) is left alone, so a
+    duplicated task can never double-send. Returns the outcome; never
+    raises for a provider failure.
+    """
+    from app import audit as audit_mod
+    from app.config import get_settings
+    from app.database import platform_session
+    from app.models.email import STATUS_FAILED, STATUS_SENT, EmailDelivery
+    from app.services import email as email_service
+
+    max_attempts = get_settings().email_retry_max_attempts
+    did = as_uuid(delivery_id)
+    org_id = as_uuid(organization_id) if organization_id else None
+    actor_id = as_uuid(created_by_id) if created_by_id else None
+
+    if scope == "platform":
+        if actor_id is None:
+            return {"retried": False, "error": "platform retry requires created_by_id"}
+        session_ctx = platform_session(actor_id)
+    else:
+        if org_id is None:
+            return {"retried": False, "error": "org retry requires organization_id"}
+        session_ctx = tenant_session(org_id)
+
+    with session_ctx as session:
+        row = session.get(EmailDelivery, did)
+        if row is None:
+            return {"retried": False, "error": "delivery not found"}
+        if row.status != STATUS_FAILED:
+            return {"retried": False, "status": row.status, "reason": "not failed"}
+        if row.attempts >= max_attempts:
+            return {"retried": False, "status": row.status, "reason": "attempts exhausted"}
+        try:
+            provider = email_service.resolve_provider()
+        except email_service.EmailConfigurationError as exc:
+            # Config went away between enqueue and execution: do not burn
+            # an attempt on a message that was never attempted.
+            return {"retried": False, "status": row.status, "reason": str(exc)[:500]}
+        if provider.name == "dev":
+            # No real provider configured (or dev mode): do not re-record
+            # a failure, do not loop. The row stays failed for an admin to
+            # retry once delivery is configured again.
+            return {"retried": False, "status": row.status, "reason": "no email provider configured"}
+
+        try:
+            message_id = provider.send(
+                to=row.to_email, subject=row.subject, html_body=row.html_body, text_body=row.text_body
+            )
+        except email_service.EmailConfigurationError as exc:
+            return {"retried": False, "status": row.status, "reason": str(exc)[:500]}
+        except email_service.EmailDeliveryError as exc:
+            row.attempts += 1
+            row.last_error = str(exc)[:500]
+            row.status = STATUS_FAILED
+            _audit_retry_event(session, row, row.scope, audit_mod.EMAIL_DELIVERY_FAILED, "failure", row.last_error)
+            if row.attempts < max_attempts:
+                email_service._enqueue_retry(
+                    row.id,
+                    countdown_seconds=60 * (2 ** (row.attempts - 1)),
+                    organization_id=row.organization_id,
+                    scope=row.scope,
+                    created_by_id=row.created_by_id,
+                )
+            return {"retried": True, "delivered": False, "attempts": row.attempts, "error": row.last_error}
+
+        row.attempts += 1
+        row.status = STATUS_SENT
+        row.provider_message_id = message_id
+        row.last_error = None
+        _audit_retry_event(session, row, row.scope, audit_mod.EMAIL_DELIVERY_SENT, "success", None)
+        return {
+            "retried": True,
+            "delivered": True,
+            "provider_message_id": message_id,
+            "attempts": row.attempts,
+        }

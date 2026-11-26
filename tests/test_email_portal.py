@@ -20,8 +20,8 @@ from app.models.email_portal import EmailMailbox, EmailMessage, PortalSession
 from app.models.itsm import CatalogItem, KnowledgeArticle, Notification, TicketComment
 from app.models.platform import Membership
 from app.models.ticket import Ticket
-from app.seed import DEV_PASSWORD
 from app.services.email_ingest import ingest_message, parse_message
+from tests.factories import TEST_PASSWORD as DEV_PASSWORD
 
 ALICE = "alice@acme.example.com"
 TOM = "tom@acme.example.com"

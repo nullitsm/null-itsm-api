@@ -3,6 +3,19 @@
 Decisions are recorded here when they are made, with the reason and the
 date. A later decision supersedes an earlier one explicitly (never silently).
 
+## 2026-11-26 — All sample data removed; tests build their own data
+At the user's direction (Nov 25, 2026) every dev fixture and sample
+record was removed: `app/seed.py` and `scripts/seed_dev.py` deleted, the
+`NULL_SEED_DEV_FIXTURES` setting removed, the live-boot scripts rewired
+to provision a real org through the public API from an empty database.
+Tests create their own organizations/users fresh in the test database
+via `tests/factories.py` (same RLS mechanics, no shipped fixtures). The
+`organizations.is_dev_fixture` column and its API field stay in the
+schema/contract untouched (always `false` now) so no migration or
+contract change was needed. The `seed_org_roles` / `seed_platform_roles`
+role-catalog seeders are NOT sample data — they define the permission
+catalog — and stay.
+
 ## 2026-11-25 — Modular monolith, not microservices
 FastAPI + PostgreSQL + SQLAlchemy + Alembic + Redis/Celery, one deployable.
 Reason: a small team ships a coherent product faster; module boundaries are
@@ -24,7 +37,7 @@ A newly inserted row is invisible until its visibility condition exists
 (e.g. an org row has no membership yet; a user row has no membership yet).
 Consequences, applied everywhere:
 - `organizations.created_by_id` + a creator clause in the org SELECT/UPDATE policies.
-- Seed creates the admin user BEFORE the org; `accept_invitation` sets RLS
+- Org provisioning creates the admin user BEFORE the org; `accept_invitation` sets RLS
   context to the new user's id before inserting them.
 - A new user's id must be client-generated (`uuid.uuid4()`) BEFORE the
   context is set — SQLAlchemy applies the uuid default only at flush.
@@ -216,3 +229,87 @@ full-suite / live-boot conditions: the `delete_engine` default
 promotion (`scalar_one_or_none` without `limit(1)`) and the duplicate
 hostname correlation above — both fixed at integration, with regression
 tests, rather than dismissed as order noise.
+
+## 2026-11-26 — Registration: duplicate email means "sign in", not "attach"
+
+Public registration refuses an admin email that already belongs to an
+account (409): the owner signs in and creates another org through the
+authenticated endpoint. The alternative — attaching a new org to an
+existing account from an unauthenticated endpoint — would let anyone
+claim an org under someone else's email. Registration also never
+creates a platform administrator: the org and platform domains share
+no tables, roles, or invitation flows, and that separation is enforced
+server-side, not by the frontend.
+
+## 2026-11-26 — Registration: the accept link is a testing aid, not a secret
+
+With no SMTP configured, invitation mail goes to the `dev_email_outbox`
+table and the `accept_url` is returned to the inviting admin in the
+create/resend response. The token itself is never logged and is stored
+only as a SHA-256 hash. The link is single-use, bound to the invited
+email + org, and expires in 48 hours; knowing an email address alone
+never activates an account. Resend rotates the token (the old link
+404s); revoke blocks acceptance outright.
+
+## 2026-11-26 — Registration: RLS-blind reads need SECURITY DEFINER, not ORM selects
+
+Two lookups that must work with no tenant context cannot use ORM
+selects (RLS hides the rows): slug uniqueness at registration
+(`org_slug_exists()`) and the public invitation lookup
+(`auth_get_invitation_by_token`, extended with org name/slug, profile
+fields, and role names). The same class of bug hid the platform
+invitation row from `accept_platform_invitation` until the platform
+context was set before the ORM read. Rule: any unauthenticated or
+pre-context read goes through a SECURITY DEFINER function or sets its
+context first — never a bare ORM query.
+
+## 2026-11-26 — Phase 4: SLA sweep order is detect → escalate → automate
+
+`scan_breaches` detects breaches only and returns `breached_ticket_ids`;
+it never fires automation. The Celery sweep (`scan_sla_breaches`, every
+5 min) evaluates Phase 2 escalation rules first, then fires
+`sla_breach` automation rules for the tickets that breached. The order
+matters: an automation action that changes a ticket (e.g. sets priority
+critical) would otherwise defeat an escalation rule's conditions for
+the same breach. Found when an unscoped `sla_breach` rule in the
+integration suite made `test_escalation_actions` see 0 events.
+
+## 2026-11-26 — Phase 4: API keys share the permission gates, not a parallel auth system
+
+API keys authenticate through the same `get_principal` dependency:
+bearer token wins when present, otherwise `X-Api-Key`. Key scopes are
+permission codes, so `require_permission` applies unchanged, and the
+key is RLS-scoped to its org. Endpoints that need a user identity get
+an explicit `get_user_principal` guard (403 for keys) instead of
+letting `principal.user_id == None` silently widen a query — the
+notification list filter `== principal.user_id` would have become
+`IS NULL` without it.
+
+## 2026-11-26 — Phase 4: scheduled-report delivery has no retry by design
+
+A scheduled report's CSV bytes are not stored (the delivery row holds
+the rendered HTML/text bodies, but not the attachment). `deliver_email(..., retry=False)` skips the retry
+enqueue for reports, so a failed delivery is recorded in
+`email_deliveries` + the `report.generated` audit metadata and the
+next scheduled run re-sends. `last_status` reflects generation only;
+a delivery failure never rewrites it.
+
+## 2026-11-26 — Phase 4: same-named return keys are a collision, not a contract
+
+`apply_patch_scan_result` returns `{"new_findings": <int>}` (a count)
+while `apply_vuln_scan_result` returns `{"new_findings": [<payloads>]}`.
+The agent job-result endpoint iterated the key unconditionally and
+500'd on every patch result in live boot. The fix iterates only the
+list shape and is covered by `test_patch_job_result_still_accepted`.
+Lesson: dispatch return values are per-handler shapes — consumers
+must check the shape, not the key name.
+
+## 2026-11-26 — Phase 4: webhook delivery is synchronous in-process for now
+
+`emit_event` fans out post-commit in the request process (bounded by
+the 10s httpx timeout, max 3 attempts) and never raises. A slow or
+failing subscriber delays the response. Async delivery (a Celery
+fan-out task) is the documented future improvement; it was not built
+because the delivery semantics (HMAC signing, retry, append-only
+delivery rows) are the same either way and the sync path is
+observable and testable today.

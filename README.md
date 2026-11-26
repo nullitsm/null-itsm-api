@@ -40,24 +40,24 @@ psql -U postgres -c "CREATE DATABASE null_itsm OWNER null_owner;"
 # 2. Environment
 cp .env.example .env        # then set DATABASE_URL / secrets (see below)
 
-# 3. Install + migrate + seed (dev fixtures only)
+# 3. Install + migrate (no sample data — a fresh database is empty)
 python -m venv .venv && .venv/bin/pip install -e ".[dev]"
-NULL_SEED_DEV_FIXTURES=true .venv/bin/alembic upgrade head
-NULL_SEED_DEV_FIXTURES=true .venv/bin/python scripts/seed_dev.py
+.venv/bin/alembic upgrade head
 
 # 4. Run the API + worker
 .venv/bin/uvicorn app.main:app --reload --port 8000
 .venv/bin/celery -A app.tasks.celery_app worker --loglevel=info
 
-# 5. Tests
-.venv/bin/python -m pytest -q
+# 5. Tests — ALWAYS the locked script (full-suite order-dependence is real)
+bash scripts/run_tests_locked.sh -q
 ```
 
-Dev fixtures (gated by `NULL_SEED_DEV_FIXTURES=true`, never production):
-Acme IT Services (`alice@acme.example.com` admin, `tom@acme.example.com`
-technician) and Globex Manufacturing (`gina@globex.example.com`,
-`greg@globex.example.com`), all with password `DevPass123!@#`; plus a dev
-platform super admin `platform@null.example.com` / `DevPass123!@#`.
+No sample data: there are no dev fixtures or demo records anywhere in
+this repo. A fresh database is empty; organizations are created through
+the public registration API (`POST /api/v1/auth/register` — see
+`docs/DEV_SETUP.md` for the full local setup, registration, invitation,
+and onboarding walkthrough). Tests create their own data fresh in the
+test database via `tests/factories.py`.
 
 ## Environment variables
 
@@ -67,8 +67,10 @@ platform super admin `platform@null.example.com` / `DevPass123!@#`.
 | `NULL_OWNER_DATABASE_URL` | DSN for migrations/seed (as `null_owner`) | `postgresql+psycopg://null_owner:dev_owner_password@127.0.0.1:5432/null_itsm` |
 | `NULL_REDIS_URL` | Redis (Celery broker + rate limiting) | `redis://127.0.0.1:6379/0` |
 | `NULL_JWT_SECRET` | HS256 signing secret (dev issuer) | — (required; use a long random value) |
+| `NULL_FIELD_ENCRYPTION_KEY` | Fernet key for webhook secrets, integration credentials, engine passwords | — (required for webhook/integration-credential creation; fails closed without it — generate with `python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'`) |
+| `NULL_EMAIL_PROVIDER` | `none` (dev outbox) / `resend` (real sending) | `none` |
+| `NULL_RESEND_API_KEY` | Resend key (env-key path; on this VM the authd surrogate is used instead — see `docs/EMAIL.md`) | — |
 | `NULL_OIDC_ISSUER` | OIDC issuer URL (production: Cognito). When set, tokens are verified RS256 via JWKS | unset (dev JWT issuer) |
-| `NULL_SEED_DEV_FIXTURES` | `true` seeds the dev fixtures | `false` |
 | `NULL_CORS_ORIGINS` | Allowed origins (production: the GitHub Pages origin) | dev localhost origins |
 | `NULL_ENV` | `development` / `production` | `development` |
 | `NULL_PLATFORM_ADMIN_EMAIL` / `NULL_PLATFORM_ADMIN_PASSWORD` | Bootstrap script (`scripts/bootstrap_platform_admin.py`) | — |
@@ -77,10 +79,9 @@ platform super admin `platform@null.example.com` / `DevPass123!@#`.
 
 1. Provision the database and the `null_app` / `null_owner` roles.
 2. Run `alembic upgrade head` as `null_owner`.
-3. Seed dev fixtures only in development (`scripts/seed_dev.py`).
-4. Create the first Platform Super Admin with
-   `scripts/bootstrap_platform_admin.py` (or use the dev fixture in dev).
-5. Start the API, then the Celery worker.
+3. Create the first Platform Super Admin with
+   `scripts/bootstrap_platform_admin.py`.
+4. Start the API, then the Celery worker.
 
 ## What is AWS-gated (nothing provisioned, nothing spent)
 
@@ -110,6 +111,8 @@ land in Terraform state).
   evidence; simulated states clearly labelled.
 - GRC features help customers manage compliance; they do NOT make NULL
   certified — never claim certification.
-- Dev fixtures are clearly labelled (`is_dev_fixture`, `source=bootstrap`).
+- No sample data anywhere in the repo: a fresh database is empty
+  (`organizations.is_dev_fixture` stays in the schema and is always
+  `false` now). Test data is built fresh per run and never shipped.
 - If Docker or anything else cannot actually run, report it as a blocker
   — do not fake a passing result. (Docker is unavailable in this VM.)

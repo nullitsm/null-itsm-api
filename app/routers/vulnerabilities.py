@@ -42,7 +42,7 @@ from app.models.vulnerabilities import (
     VulnerabilityFinding,
     VulnScan,
 )
-from app.services import endpoint_service, vuln_service
+from app.services import endpoint_service, vuln_service, webhook_service
 from app.services.greenbone import GreenboneError
 from app.services.identity_service import SecretStorageError, encrypt_secret
 
@@ -673,6 +673,9 @@ def import_scan_results(
     counts = vuln_service.correlate_scan_results(
         session, principal.organization_id, scan, [r.model_dump() for r in body.results]
     )
+    # new_findings is an internal fan-out list, not an API field: pop it
+    # before building the response, then emit after the commit.
+    new_findings = counts.pop("new_findings")
     verified = vuln_service.apply_verification(session, principal.organization_id, scan)
     scan.status = "completed"
     scan.finished_at = datetime.now(UTC)
@@ -681,6 +684,10 @@ def import_scan_results(
     _audit(session, principal, VULN_SCAN_RESULTS_IMPORTED, "vuln_scan", str(scan.id), counts)
     out = {"scan_id": str(scan.id), "status": scan.status, **counts, "verified": verified}
     session.commit()
+    for finding in new_findings:
+        webhook_service.emit_event(
+            principal.organization_id, "vulnerability.found", finding, user_id=principal.user_id
+        )
     return out
 
 
@@ -701,8 +708,14 @@ def poll_scan(
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"engine unreachable: {exc}")
     session.flush()
     _audit(session, principal, VULN_SCAN_POLLED, "vuln_scan", str(scan.id), {"status": result.get("status")})
+    # new_findings is an internal fan-out list, not an API field.
+    new_findings = result.pop("new_findings", [])
     out = {"scan_id": str(scan.id), **result}
     session.commit()
+    for finding in new_findings:
+        webhook_service.emit_event(
+            principal.organization_id, "vulnerability.found", finding, user_id=principal.user_id
+        )
     return out
 
 

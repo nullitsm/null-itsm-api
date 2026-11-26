@@ -115,4 +115,10 @@ def test_rls_blocks_cross_org_user_read(client, app_db, org_ids, acme_admin):
         cur.execute("SELECT email FROM users WHERE email LIKE '%@globex.example.com'")
         assert cur.fetchall() == []
         cur.execute("SELECT email FROM users WHERE email LIKE '%@acme.example.com'")
-        assert len(cur.fetchall()) == 2
+        # The two active fixture users must be visible; the count is not
+        # exact because other tests add Acme members who are then
+        # suspended/removed — and since migration 0019 inactive
+        # co-members stay visible by design (they must still show in
+        # Organization Users), they are counted here too.
+        emails = {row[0] for row in cur.fetchall()}
+        assert {"alice@acme.example.com", "tom@acme.example.com"} <= emails

@@ -25,7 +25,8 @@ Conventions (apply to every table):
 |---|---|---|
 | `organizations` | id, name, slug (unique), settings JSONB, is_active, is_dev_fixture, created_by_id → users | `settings` holds the least-privilege policy + branding. `created_by_id` exists so the creator can read the row back at creation (no membership yet). |
 | `users` | id, email (unique), password_hash, full_name, is_active, email_verified, mfa_enabled, mfa_secret, last_login_at | Global identity: one person, many orgs. |
-| `memberships` | organization_id, user_id, status (active/invited/suspended), is_owner, expires_at | Unique (org, user). The source of truth for membership. |
+| `memberships` | organization_id, user_id, status (active/invited/suspended/deactivated), is_owner, expires_at | Unique (org, user). The source of truth for membership. `deactivated` = removed by an admin (remove endpoint or PATCH status); the user row and audit history are kept. |
+| `email_deliveries` | organization_id (nullable), scope (org/platform), org_invitation_id / platform_invitation_id (nullable, at most one), to_email, subject, template, provider, provider_message_id, status (sent/failed/dev_recorded), attempts, last_error, created_by_id, html_body, text_body | One row per outbound-email attempt batch (migration 0018). Bodies stored so retries re-send identically. RLS: org-scoped for org rows; platform-gated for platform rows. Partial unique indexes enforce at most one pending invitation per (org, email) / per platform email. |
 | `permissions` | code (unique), module, description | Org catalog. **No `platform:*` code** (removed in 0002). |
 | `roles` | organization_id (NULL = system template), name, description, access_level, is_system | Unique (org, name). Eight templates (see below). |
 | `role_permissions` | role_id, permission_id, organization_id | Unique (role, permission). org copied from the role. |
@@ -112,6 +113,52 @@ read `organizations` without an RLS context. `email_messages` polling
 has its own narrower function (`email_list_active_mailbox_orgs`,
 migration 0006).
 
+## Registration + onboarding + invitations (implemented, migration 0013, Nov 26, 2026)
+
+`organizations` gains nullable profile columns from registration:
+`contact_email`, `website`, `industry`, `size`. `invitations` gains
+`full_name`, `department`, `team` (the invite form fields; the invitee
+cannot change org or roles at accept time).
+
+- `departments` (`organization_id`, `name` unique per org,
+  `description`) + `teams` (`organization_id`, `department_id`
+  nullable, `name` unique per org+department, `description`). Both
+  carry the standard org-scoped RLS ALL policy. Registration creates
+  the three defaults: IT Operations, Service Desk, Security.
+- `org_onboarding` (`organization_id` PK, `current_step`,
+  `steps` JSONB, `completed_at`). Steps: `profile`, `departments`,
+  `invite_technicians`, `service_desk`, `business_hours_sla`,
+  `assets_endpoints`, `finish`. Registration marks `profile`
+  complete and starts at `departments`. Standard org-scoped RLS.
+- `platform_invitations` (the platform domain's invitation table —
+  separate from org `invitations`): `email`, `full_name`,
+  `token_hash` (unique, SHA-256), `invited_by_id` →
+  `platform_users`, `role_id` → `platform_roles`, `status`
+  (`pending | accepted | expired | revoked`), `expires_at`,
+  `accepted_at`. Gated on a non-empty platform context (like
+  `platform_users`); never touches any organization.
+- `dev_email_outbox` (`organization_id` nullable, `scope`
+  `'org' | 'platform'`, `to_email`, `subject`, `body`): the local
+  email sink. When SMTP is unconfigured the backend records the
+  invitation email here instead of sending it; SELECT+INSERT only,
+  org-scoped for `scope='org'`, platform-gated for `scope='platform'`.
+
+Functions: `auth_get_invitation_by_token` replaced (DROP + CREATE —
+CREATE OR REPLACE cannot change the return type) to also return org
+name/slug, the pre-filled name/department/team, and the assigned role
+names for the public accept page. New: `auth_get_platform_invitation_by_token`
+(platform invitations) and `org_slug_exists(p_slug)` — slug
+uniqueness must bypass RLS because at registration time the caller
+belongs to no org yet and an ORM organizations SELECT sees nothing.
+
+Permission catalog: `users:read` added (view users, departments,
+teams); granted to the five staff templates (IT Operations, Service
+Desk Technician, Endpoint Administrator, Security Analyst, Change
+Manager) and to the Auditor via the computed `READ_PERMISSIONS` set;
+Organization Administrator holds it via `*`. `invitation_days` is
+now **2** (48-hour invitation expiry) and `app_url` (default
+`https://nullitsm.github.io`) builds the accept links.
+
 ## Later phases — designed, not yet built
 
 ### Phase 3 — Endpoint + security engine (BUILT, Nov 26, 2026)
@@ -142,7 +189,7 @@ RLS: `agent_releases` (release catalog) and `cve_catalog` (CVE/KEV data).
 - Deferred (Tier 2): `on_call_schedules` + `on_call_rotations`.
   DNS/DHCP and syslog ingestion are not built either.
 
-### Phase 4 — Enterprise operations
+### Phase 4 — Enterprise operations (migrations 0014–0017) — BUILT Nov 26, 2026
 `workflows` (+ `workflow_versions`, `workflow_runs`, `workflow_run_steps`
 — execution history, retries, permissions), `automation_rules`
 (+ `automation_runs`), `custom_forms` + `custom_fields` + `field_values`,
@@ -152,7 +199,8 @@ RLS: `agent_releases` (release catalog) and `cve_catalog` (CVE/KEV data).
 Defender, Slack, Teams, GitHub, Power BI), `api_keys` (developer portal),
 `feature_flags` + `releases`, `status_page_incidents` (customer support +
 status page), `grc_controls` (+ `grc_control_mappings` SOC 2 / ISO 27001 /
-NIST CSF / CIS, `grc_evidence`, `grc_assessments`, `grc_exceptions`).
+NIST CSF / CIS, `grc_evidence`, `grc_assessments`, `grc_exceptions`),
+`entity_links` (cross-module links; allow-listed entity/link types).
 **Honesty rule:** GRC features help customers manage compliance; they do
 NOT make NULL certified — never claim certification.
 

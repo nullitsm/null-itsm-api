@@ -17,7 +17,7 @@ import logging
 import uuid
 
 from app.database import list_organization_ids, system_session, tenant_session
-from app.services import sla_service
+from app.services import automation_service, sla_service
 from app.tasks.celery_app import celery_app
 
 logger = logging.getLogger("null.tasks.sla")
@@ -34,14 +34,41 @@ def scan_sla_breaches() -> dict:
 
     Runs every 5 minutes (beat entry wired by the coordinator). Breach
     detection is idempotent, so overlapping runs are safe.
+
+    Order inside one org is deliberate: detect breaches, evaluate the
+    Phase 2 escalation rules against the breached tickets, THEN fire
+    Phase 4 automation rules (``sla_breach`` trigger) for the tickets
+    that breached in this scan. Automation runs last so an automation
+    action that changes a ticket (e.g. sets priority critical) cannot
+    defeat an escalation rule's conditions for the same breach.
     """
-    total = {"orgs": 0, "tickets_scanned": 0, "breaches_created": 0, "notifications_sent": 0, "events_created": 0}
+    total = {
+        "orgs": 0,
+        "tickets_scanned": 0,
+        "breaches_created": 0,
+        "notifications_sent": 0,
+        "events_created": 0,
+        "automation_runs": 0,
+    }
     for org_id in _all_org_ids():
         total["orgs"] += 1
         try:
             with tenant_session(org_id) as session:
                 breaches = sla_service.scan_breaches(session, org_id)
                 escalations = sla_service.evaluate_escalations(session, org_id)
+                automation_runs = 0
+                for ticket_id in breaches.get("breached_ticket_ids", []):
+                    # A failing action is recorded on the AutomationRun,
+                    # never raised — one bad rule cannot break the sweep.
+                    runs = automation_service.evaluate_rules(
+                        session,
+                        org_id=org_id,
+                        trigger="sla_breach",
+                        entity_type="ticket",
+                        entity_id=uuid.UUID(ticket_id),
+                        actor_id=None,
+                    )
+                    automation_runs += len(runs)
         except Exception:
             logger.exception("SLA sweep failed for org %s", org_id)
             continue
@@ -49,6 +76,7 @@ def scan_sla_breaches() -> dict:
         total["breaches_created"] += breaches["breaches_created"]
         total["notifications_sent"] += breaches["notifications_sent"]
         total["events_created"] += escalations["events_created"]
+        total["automation_runs"] += automation_runs
     logger.info("SLA sweep complete: %s", total)
     return total
 

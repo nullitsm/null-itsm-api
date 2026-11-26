@@ -124,12 +124,18 @@ def correlate_scan_results(session: Session, org_id: uuid.UUID, scan: VulnScan, 
 
     Used by agent job results, manual imports, and Greenbone polling —
     the logic lives here exactly once. Returns counts
-    ``{results_applied, findings_created, findings_updated}``.
+    ``{results_applied, findings_created, findings_updated}`` plus
+    ``new_findings`` — plain-data payloads (finding_id, cve_id,
+    severity, endpoint_id, scan_id) for every finding created by this
+    call, so the caller can fan out ``vulnerability.found`` webhooks
+    after its own commit. Updated/reopened findings are not re-emitted:
+    the event means "first seen".
     """
     now = _now()
     results_applied = 0
     findings_created = 0
     findings_updated = 0
+    new_findings: list[VulnerabilityFinding] = []
     for raw in results:
         if not isinstance(raw, dict):
             continue
@@ -156,18 +162,18 @@ def correlate_scan_results(session: Session, org_id: uuid.UUID, scan: VulnScan, 
             continue
         existing = _find_finding(session, org_id, endpoint.id if endpoint else None, cve_id)
         if existing is None:
-            session.add(
-                VulnerabilityFinding(
-                    organization_id=org_id,
-                    endpoint_id=endpoint.id if endpoint else None,
-                    cve_id=cve_id,
-                    severity=severity,
-                    status="open",
-                    first_seen_at=now,
-                    last_seen_at=now,
-                    scan_id=scan.id,
-                )
+            finding = VulnerabilityFinding(
+                organization_id=org_id,
+                endpoint_id=endpoint.id if endpoint else None,
+                cve_id=cve_id,
+                severity=severity,
+                status="open",
+                first_seen_at=now,
+                last_seen_at=now,
+                scan_id=scan.id,
             )
+            session.add(finding)
+            new_findings.append(finding)
             findings_created += 1
             continue
         if existing.status in OPEN_FINDING_STATUSES:
@@ -193,6 +199,16 @@ def correlate_scan_results(session: Session, org_id: uuid.UUID, scan: VulnScan, 
         "results_applied": results_applied,
         "findings_created": findings_created,
         "findings_updated": findings_updated,
+        "new_findings": [
+            {
+                "finding_id": str(f.id),
+                "cve_id": f.cve_id,
+                "severity": f.severity,
+                "endpoint_id": str(f.endpoint_id) if f.endpoint_id else None,
+                "scan_id": str(f.scan_id) if f.scan_id else None,
+            }
+            for f in new_findings
+        ],
     }
 
 
@@ -369,6 +385,7 @@ def apply_vuln_scan_result(session: Session, org_id: uuid.UUID, job: AgentJob) -
         "results_applied": counts["results_applied"],
         "findings_created": counts["findings_created"],
         "findings_updated": counts["findings_updated"],
+        "new_findings": counts["new_findings"],
         "verified": verified,
     }
 

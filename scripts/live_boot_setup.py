@@ -1,8 +1,10 @@
-"""Live-boot setup for Phase 3 verification (coordinator scratch, not shipped).
+"""Live-boot setup (coordinator scratch, not shipped).
 
 Reads the dev-only database credentials from tests/conftest.py (never types
-them), creates a fresh `null_itsm_live` database, runs alembic to head, and
-seeds the labelled dev fixtures. The live DB is dropped after the boot check.
+them), creates a fresh `null_itsm_live` database, and runs alembic to head.
+The database is intentionally EMPTY — there are no fixtures or sample
+records anywhere in this repo; the boot check creates its own org through
+the public API. The live DB is dropped after the boot check.
 """
 
 import os
@@ -46,7 +48,4 @@ subprocess.run(
     env=env,
 )
 print("alembic at head")
-env["NULL_SEED_DEV_FIXTURES"] = "true"
-subprocess.run([sys.executable, "-m", "scripts.seed_dev"], check=True, env=env)
-print("seeded dev fixtures")
 print("APP_URL_DB=null_itsm_live")

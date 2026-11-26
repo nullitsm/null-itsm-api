@@ -56,7 +56,7 @@ def test_auditor_is_read_only(client):
     # invitation flow and log in as them.
     import secrets
 
-    from app.seed import DEV_PASSWORD
+    from tests.factories import TEST_PASSWORD as DEV_PASSWORD
 
     # Create a fresh org with a no-org user, then create an Auditor-only user.
     email = f"auditor-{secrets.token_hex(4)}@example.com"
@@ -92,32 +92,20 @@ def test_auditor_is_read_only(client):
     from app.security import hash_token, new_opaque_token
     from tests.conftest import TEST_OWNER_URL
 
-    # Re-issue a fresh invitation token directly so the test can accept it:
-    # create the invitation row via the API already stored a hashed token;
-    # instead, create a new invitation row with a KNOWN token.
+    # Retoken the API-created invitation row with a KNOWN token so the
+    # test can accept it. Only one pending invitation per (org, email)
+    # may exist (migration 0018 enforces it with a partial unique
+    # index), so no second row is created — the API invite already
+    # assigned the Auditor role.
     token = new_opaque_token()
     engine = create_engine(TEST_OWNER_URL)
     session = sessionmaker(bind=engine)()
     try:
-        from datetime import datetime, timedelta, timezone
-
         from app.database import set_rls_context
-        from app.models.rbac import Role
 
-        owner = session.query(Role).filter(Role.organization_id == uuid.UUID(org_id), Role.name == "Auditor").one()
         set_rls_context(session, uuid.UUID(org_id), uuid.UUID(user["user_id"]))
-        inv = Invitation(
-            organization_id=uuid.UUID(org_id),
-            email=email2,
-            token_hash=hash_token(token),
-            invited_by_id=uuid.UUID(user["user_id"]),
-            expires_at=datetime.now(timezone.utc) + timedelta(days=7),
-        )
-        session.add(inv)
-        session.flush()
-        from app.models.auth import InvitationRole
-
-        session.add(InvitationRole(invitation_id=inv.id, role_id=owner.id, organization_id=uuid.UUID(org_id)))
+        inv = session.get(Invitation, uuid.UUID(invite.json()["id"]))
+        inv.token_hash = hash_token(token)
         session.commit()
     finally:
         session.close()
@@ -166,7 +154,7 @@ def test_admin_cannot_grant_permissions_beyond_scope(client, acme_admin):
     )
     assert assigned.status_code == 200, assigned.text
 
-    from app.seed import DEV_PASSWORD
+    from tests.factories import TEST_PASSWORD as DEV_PASSWORD
 
     tech_login = client.post(
         "/api/v1/auth/login", json={"email": "tom@acme.example.com", "password": DEV_PASSWORD}

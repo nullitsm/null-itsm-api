@@ -394,10 +394,18 @@ def _next_ticket_number(session: Session, org_id: uuid.UUID) -> str:
     return f"INC-{counter.last_number:06d}"
 
 
-def offboard_user(session: Session, org_id: uuid.UUID, user_id: uuid.UUID, actor_id: uuid.UUID) -> dict:
+def offboard_user(
+    session: Session,
+    org_id: uuid.UUID,
+    user_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    target_status: str = "suspended",
+) -> dict:
     """Offboard a user, all-or-nothing in the caller's transaction.
 
-    (1) list assigned assets; (2) suspend the membership; (3) revoke the
+    (1) list assigned assets; (2) set the membership to ``target_status``
+    ("suspended" for a plain offboarding, "deactivated" when the member
+    is being removed — see org_service.remove_technician); (3) revoke the
     user's sessions; (4) one recovery ticket per assigned asset
     (requester = assignee = caller); (5) assets to in_repair with a
     lifecycle event + closed assignment; (6) revoke temporary grants;
@@ -406,6 +414,8 @@ def offboard_user(session: Session, org_id: uuid.UUID, user_id: uuid.UUID, actor
     user = session.get(User, user_id)
     if user is None:
         raise ValueError("User not found")
+    if target_status not in ("suspended", "deactivated"):
+        raise ValueError("target_status must be 'suspended' or 'deactivated'")
     membership = session.execute(
         select(Membership).where(Membership.organization_id == org_id, Membership.user_id == user_id)
     ).scalar_one_or_none()
@@ -420,8 +430,8 @@ def offboard_user(session: Session, org_id: uuid.UUID, user_id: uuid.UUID, actor
         .all()
     )
 
-    # (2) Suspend the membership.
-    membership.status = "suspended"
+    # (2) Set the membership status.
+    membership.status = target_status
     session.flush()
 
     # (3) Revoke the user's sessions in this org.
@@ -522,7 +532,7 @@ def offboard_user(session: Session, org_id: uuid.UUID, user_id: uuid.UUID, actor
         "tickets_created": tickets_created,
         "sessions_revoked": len(sessions),
         "temp_grants_revoked": grants_revoked,
-        "membership_status": "suspended",
+        "membership_status": target_status,
     }
     audit_mod.write_audit(
         session,

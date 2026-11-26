@@ -35,6 +35,7 @@ from app.models.platform_admin import (
     PlatformUser,
     PlatformUserRole,
 )
+from app.models.registration import PlatformInvitation
 from app.permissions import PLATFORM_PERMISSIONS, PLATFORM_ROLE_TEMPLATES, resolve_template_permissions
 from app.security import (
     hash_password,
@@ -47,6 +48,7 @@ from app.security import (
     verify_password,
     verify_totp,
 )
+from app.services import email as email_service
 
 UTC = timezone.utc
 
@@ -771,3 +773,233 @@ def list_platform_audit(
     if organization_id is not None:
         stmt = stmt.where(PlatformAuditLog.organization_id == organization_id)
     return list(session.execute(stmt).scalars())
+
+
+# --- Platform invitations ---------------------------------------------------
+# Invitations into the platform administration domain (internal NULL
+# personnel only). Separate table, separate flow, separate authorization
+# from org invitations: an org invitation can never create a platform
+# admin, and a platform invitation never touches an organization.
+
+
+def _platform_invitation_accept_url(token: str) -> str:
+    return f"{get_settings().app_url}/platform/invite/accept?token={token}"
+
+
+def invite_platform_admin(
+    session: Session, actor, email: str, full_name: str, role_id: uuid.UUID
+) -> tuple["PlatformInvitation", str, str, "email_service.DeliveryResult"]:
+    """Invite internal personnel into platform administration.
+
+    Returns (invitation, raw_token, accept_url, delivery). Single-use, bound to
+    this email, expires in 48 hours. Only a Platform Super Admin may
+    invite someone to the Platform Super Admin role.
+    """
+    role = session.get(PlatformRole, role_id)
+    if role is None:
+        raise ValueError("Platform role not found")
+    _check_super_admin_boundary(actor, role)
+    email = email.strip().lower()
+    # Expire any stale pending invitation for this email first: an expired
+    # invitation keeps status 'pending' until something retires it, and the
+    # at-most-one-pending invariant (partial unique index, migration 0018)
+    # would otherwise block a legitimate re-invite after expiry.
+    stale = session.execute(
+        select(PlatformInvitation).where(
+            PlatformInvitation.email == email,
+            PlatformInvitation.status == "pending",
+            PlatformInvitation.expires_at <= datetime.now(UTC),
+        )
+    ).scalar_one_or_none()
+    if stale is not None:
+        stale.status = "expired"
+        session.flush()
+        write_platform_audit(
+            session,
+            actor_id=actor.platform_user_id,
+            action=audit_mod.PLATFORM_INVITATION_EXPIRED,
+            resource_type="platform_invitation",
+            resource_id=str(stale.id),
+            outcome="success",
+            metadata={"email": email},
+        )
+    existing = session.execute(
+        select(PlatformInvitation).where(
+            PlatformInvitation.email == email,
+            PlatformInvitation.status == "pending",
+            PlatformInvitation.expires_at > datetime.now(UTC),
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        raise ValueError("A pending platform invitation already exists for this email")
+    token = new_opaque_token()
+    invitation = PlatformInvitation(
+        email=email,
+        full_name=full_name.strip(),
+        token_hash=hash_token(token),
+        invited_by_id=actor.platform_user_id,
+        role_id=role.id,
+        expires_at=datetime.now(UTC) + timedelta(days=get_settings().invitation_days),
+    )
+    session.add(invitation)
+    session.flush()
+    accept_url = _platform_invitation_accept_url(token)
+    inviter = session.get(PlatformUser, actor.platform_user_id)
+    delivery = email_service.send_platform_invitation_email(
+        email,
+        accept_url,
+        session,
+        recipient_name=invitation.full_name,
+        role_name=role.name,
+        inviter_name=inviter.full_name if inviter is not None else "",
+        platform_invitation_id=invitation.id,
+        created_by_id=actor.platform_user_id,
+    )
+    write_platform_audit(
+        session,
+        actor_id=actor.platform_user_id,
+        action=audit_mod.PLATFORM_INVITATION_CREATED,
+        resource_type="platform_invitation",
+        resource_id=str(invitation.id),
+        outcome="success",
+        metadata={
+            "email": email,
+            "role": role.name,
+            "delivery": {
+                "status": "sent" if delivery.delivered else ("dev_recorded" if delivery.dev_recorded else "failed"),
+                "provider": delivery.provider,
+                "provider_message_id": delivery.provider_message_id,
+                "error": delivery.error,
+            },
+        },
+    )
+    return invitation, token, accept_url, delivery
+
+
+def list_platform_invitations(session: Session) -> list["PlatformInvitation"]:
+
+    return list(
+        session.execute(
+            select(PlatformInvitation).order_by(PlatformInvitation.created_at.desc())
+        ).scalars()
+    )
+
+
+def resend_platform_invitation(
+    session: Session, actor, invitation_id: uuid.UUID
+) -> tuple["PlatformInvitation", str, str, "email_service.DeliveryResult"]:
+    """Regenerate a pending platform invitation's token + 48h expiry."""
+    invitation = session.get(PlatformInvitation, invitation_id)
+    if invitation is None:
+        raise ValueError("Platform invitation not found")
+    if invitation.status != "pending":
+        raise ValueError("Only a pending invitation can be resent")
+    token = new_opaque_token()
+    invitation.token_hash = hash_token(token)
+    invitation.expires_at = datetime.now(UTC) + timedelta(days=get_settings().invitation_days)
+    accept_url = _platform_invitation_accept_url(token)
+    role = session.get(PlatformRole, invitation.role_id)
+    inviter = session.get(PlatformUser, actor.platform_user_id)
+    delivery = email_service.send_platform_invitation_email(
+        invitation.email,
+        accept_url,
+        session,
+        recipient_name=invitation.full_name,
+        role_name=role.name if role is not None else "Platform Administrator",
+        inviter_name=inviter.full_name if inviter is not None else "",
+        platform_invitation_id=invitation.id,
+        created_by_id=actor.platform_user_id,
+    )
+    write_platform_audit(
+        session,
+        actor_id=actor.platform_user_id,
+        action=audit_mod.PLATFORM_INVITATION_RESENT,
+        resource_type="platform_invitation",
+        resource_id=str(invitation.id),
+        outcome="success",
+        metadata={
+            "email": invitation.email,
+            "delivery": {
+                "status": "sent" if delivery.delivered else ("dev_recorded" if delivery.dev_recorded else "failed"),
+                "provider": delivery.provider,
+                "provider_message_id": delivery.provider_message_id,
+                "error": delivery.error,
+            },
+        },
+    )
+    return invitation, token, accept_url, delivery
+
+
+def revoke_platform_invitation(session: Session, actor, invitation_id: uuid.UUID) -> "PlatformInvitation":
+
+    invitation = session.get(PlatformInvitation, invitation_id)
+    if invitation is None:
+        raise ValueError("Platform invitation not found")
+    invitation.status = "revoked"
+    write_platform_audit(
+        session,
+        actor_id=actor.platform_user_id,
+        action=audit_mod.PLATFORM_INVITATION_REVOKED,
+        resource_type="platform_invitation",
+        resource_id=str(invitation.id),
+        outcome="success",
+        metadata={"email": invitation.email},
+    )
+    return invitation
+
+
+def accept_platform_invitation(session: Session, token: str, password: str) -> PlatformUser:
+    """Accept a platform invitation: creates the platform admin with the
+    invited role. Single-use, email-bound, 48h expiry. The role was
+    fixed at invite time; the invitee cannot change it."""
+
+    row = (
+        session.execute(
+            text("SELECT * FROM auth_get_platform_invitation_by_token(:h)"),
+            {"h": hash_token(token)},
+        )
+        .mappings()
+        .first()
+    )
+    if row is None:
+        raise ValueError("Invalid or expired invitation")
+    # Scope to the inviter BEFORE the raw table read: the platform
+    # invitations SELECT policy gates on a non-empty platform context,
+    # and an unauthenticated accept has none yet.
+    _set_platform_context(session, as_uuid(row["invited_by_id"]))
+    invitation = session.get(PlatformInvitation, as_uuid(row["id"]))
+    if invitation is None or invitation.status != "pending" or invitation.expires_at < datetime.now(UTC):
+        raise ValueError("Invalid or expired invitation")
+    role = session.get(PlatformRole, as_uuid(row["role_id"]))
+    if role is None:
+        raise ValueError("Invalid or expired invitation")
+    from types import SimpleNamespace
+
+    actor = SimpleNamespace(platform_user_id=as_uuid(row["invited_by_id"]))
+    user = create_platform_user(session, actor, row["email"], row["full_name"] or row["email"], password)
+    session.add(
+        PlatformUserRole(
+            platform_user_id=user.id, role_id=role.id, granted_by_id=as_uuid(row["invited_by_id"])
+        )
+    )
+    invitation.status = "accepted"
+    invitation.accepted_at = datetime.now(UTC)
+    write_platform_audit(
+        session,
+        actor_id=user.id,
+        action=audit_mod.PLATFORM_INVITATION_ACCEPTED,
+        resource_type="platform_invitation",
+        resource_id=str(invitation.id),
+        outcome="success",
+        metadata={"email": invitation.email, "role": role.name},
+    )
+    write_platform_audit(
+        session,
+        actor_id=user.id,
+        action=audit_mod.PLATFORM_ROLE_ASSIGNED,
+        resource_type="platform_user_role",
+        resource_id=str(user.id),
+        outcome="success",
+        metadata={"role": role.name},
+    )
+    return user

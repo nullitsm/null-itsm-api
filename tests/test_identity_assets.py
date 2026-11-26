@@ -1000,7 +1000,8 @@ def _make_active_acme_user(org_id: str, email: str, full_name: str) -> str:
 
     from app.models.platform import Membership, User
     from app.security import hash_password
-    from tests.conftest import DEV_PASSWORD, TEST_OWNER_URL
+    from tests.conftest import TEST_OWNER_URL
+    from tests.factories import TEST_PASSWORD as DEV_PASSWORD
 
     engine = create_engine(TEST_OWNER_URL)
     session = sessionmaker(bind=engine)()
@@ -1025,7 +1026,7 @@ def _make_active_acme_user(org_id: str, email: str, full_name: str) -> str:
 
 
 def test_offboarding_end_to_end(client, acme_admin, acme_roles, app_db, org_ids):
-    from tests.conftest import DEV_PASSWORD
+    from tests.factories import TEST_PASSWORD as DEV_PASSWORD
 
     user_id = _make_active_acme_user(org_ids["acme"], "offboard-me@acme.example.com", "Offboard Test")
     ops_role_id = acme_roles["IT Operations"]

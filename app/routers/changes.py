@@ -18,8 +18,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import audit as audit_mod
-from app.deps import Principal, get_db, require_permission
+from app.deps import Forbidden, Principal, get_db, require_permission
 from app.models.itsm import Change, ChangeApproval, ChangeTask
+from app.services import webhook_service
 from app.services.itsm_service import get_org_row, next_change_number
 
 router = APIRouter(prefix="/api/v1/changes", tags=["changes"])
@@ -256,8 +257,20 @@ def create_change(
     session.add(change)
     session.flush()
     _audit(session, principal, audit_mod.CHANGE_CREATED, change)
+    payload = {
+        "change_id": str(change.id),
+        "number": change.number,
+        "title": change.title,
+        "status": change.status,
+        "risk": change.risk,
+        "priority": change.priority,
+        "type": change.type,
+    }
     out = _out(change)
     session.commit()
+    webhook_service.emit_event(
+        principal.organization_id, "change.created", payload, user_id=principal.user_id
+    )
     return out
 
 
@@ -354,6 +367,10 @@ def submit_change(
 
 
 def _decide(session: Session, principal: Principal, change: Change, decision: str, comment: str) -> ChangeApproval:
+    # Change decisions are user acts: an API key has no approver identity
+    # and must never record a decision with a NULL approver.
+    if principal.user_id is None:
+        raise Forbidden("Change decisions require a user session; API keys have no user identity")
     if change.status != "pending_approval":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=f"Change is not pending approval (status {change.status})"
@@ -392,8 +409,20 @@ def approve_change(
     change.status = "approved"
     _audit(session, principal, audit_mod.CHANGE_APPROVED, change)
     session.flush()
+    payload = {
+        "change_id": str(change.id),
+        "number": change.number,
+        "title": change.title,
+        "status": change.status,
+        "risk": change.risk,
+        "priority": change.priority,
+        "type": change.type,
+    }
     out = _out(change)
     session.commit()
+    webhook_service.emit_event(
+        principal.organization_id, "change.approved", payload, user_id=principal.user_id
+    )
     return out
 
 

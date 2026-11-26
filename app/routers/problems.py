@@ -20,6 +20,7 @@ from app import audit as audit_mod
 from app.deps import Principal, get_db, require_permission
 from app.models.itsm import KnownError, MajorIncident, Problem
 from app.models.ticket import Ticket
+from app.services import webhook_service
 from app.services.itsm_service import get_org_row, next_problem_number
 
 router = APIRouter(prefix="/api/v1/problems", tags=["problems"])
@@ -358,8 +359,18 @@ def declare_incident(
         ticket_id=str(ticket.id),
         severity=incident.severity,
     )
+    payload = {
+        "incident_id": str(incident.id),
+        "ticket_id": str(ticket.id),
+        "title": incident.title,
+        "severity": incident.severity,
+        "status": incident.status,
+    }
     out = _incident_out(incident)
     session.commit()
+    webhook_service.emit_event(
+        principal.organization_id, "incident.declared", payload, user_id=principal.user_id
+    )
     return out
 
 

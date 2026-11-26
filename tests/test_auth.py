@@ -6,7 +6,7 @@ import time
 
 import jwt
 
-from app.seed import DEV_PASSWORD
+from tests.factories import TEST_PASSWORD as DEV_PASSWORD
 
 
 def test_liveness(client):
@@ -173,13 +173,13 @@ def test_password_reset_confirm_flow(client):
 
     resp = client.post(
         "/api/v1/auth/password-reset/confirm",
-        json={"token": token, "new_password": "NewDevPass123!@#"},
+        json={"token": token, "new_password": "NewTestPass123!@#"},
     )
     assert resp.status_code == 200, resp.text
     # The new password works, the old one does not.
     assert (
         client.post(
-            "/api/v1/auth/login", json={"email": "alice@acme.example.com", "password": "NewDevPass123!@#"}
+            "/api/v1/auth/login", json={"email": "alice@acme.example.com", "password": "NewTestPass123!@#"}
         ).status_code
         == 200
     )

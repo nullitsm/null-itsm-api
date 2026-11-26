@@ -29,7 +29,7 @@ from app.models.itsm import (
 )
 from app.models.ticket import Ticket, TicketCounter
 from app.schemas import TicketCreate, TicketOut, TicketUpdate
-from app.services import sla_service
+from app.services import automation_service, sla_service, webhook_service
 from app.services.itsm_service import compute_next_run, get_org_row, validate_schedule
 from app.services.storage import StorageError, get_storage
 
@@ -119,11 +119,37 @@ def create_ticket(
         outcome="success",
         metadata={"number": ticket.number},
     )
-    # Build the response BEFORE commit: the RLS context is SET LOCAL to
-    # this transaction and dies at commit, so any attribute that needs a
-    # refresh after commit (e.g. server-computed updated_at) would fail.
+    # Automation (Phase 4): rules fire against the real ticket before the
+    # response is built, so an action such as assign/set_priority is
+    # reflected in the returned ticket. A failing action is recorded on
+    # the AutomationRun, never raised — ticket creation still succeeds.
+    automation_service.evaluate_rules(
+        session,
+        org_id=principal.organization_id,
+        trigger="ticket.created",
+        entity_type="ticket",
+        entity_id=ticket.id,
+        actor_id=principal.user_id,
+    )
+    # Build the payload AND the response BEFORE commit: the RLS context
+    # is SET LOCAL to this transaction and dies at commit, so any
+    # attribute that needs a refresh after commit (e.g. server-computed
+    # updated_at) would fail.
+    payload = {
+        "ticket_id": str(ticket.id),
+        "number": ticket.number,
+        "title": ticket.title,
+        "status": ticket.status,
+        "priority": ticket.priority,
+        "category": ticket.category,
+    }
     out = _ticket_out(ticket)
     session.commit()
+    # Webhooks (Phase 4): best-effort post-commit fan-out in a fresh
+    # tenant session; never fails the request.
+    webhook_service.emit_event(
+        principal.organization_id, "ticket.created", payload, user_id=principal.user_id
+    )
     return out
 
 
@@ -691,6 +717,8 @@ def update_ticket(
     ticket = session.get(Ticket, ticket_id)
     if ticket is None or ticket.organization_id != principal.organization_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
+    old_status = ticket.status
+    old_priority = ticket.priority
     if body.status is not None:
         if body.status not in VALID_STATUSES:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid status")
@@ -713,10 +741,46 @@ def update_ticket(
     )
     # Flush first: the UPDATE expires the server-computed updated_at, and
     # its refresh must happen inside this transaction (RLS context alive).
-    # Build the response before commit for the same reason as create.
+    # Automation (Phase 4) fires ticket.updated, plus
+    # ticket.priority_changed when the priority actually changed; both
+    # evaluate against the real ticket before the response is built.
+    # Build the payload before commit for the same reason as create.
     session.flush()
+    automation_service.evaluate_rules(
+        session,
+        org_id=principal.organization_id,
+        trigger="ticket.updated",
+        entity_type="ticket",
+        entity_id=ticket.id,
+        actor_id=principal.user_id,
+    )
+    if body.priority is not None and body.priority != old_priority:
+        automation_service.evaluate_rules(
+            session,
+            org_id=principal.organization_id,
+            trigger="ticket.priority_changed",
+            entity_type="ticket",
+            entity_id=ticket.id,
+            actor_id=principal.user_id,
+        )
+    payload = {
+        "ticket_id": str(ticket.id),
+        "number": ticket.number,
+        "title": ticket.title,
+        "status": ticket.status,
+        "priority": ticket.priority,
+        "category": ticket.category,
+    }
+    newly_resolved = old_status != "resolved" and ticket.status == "resolved"
     out = _ticket_out(ticket)
     session.commit()
+    webhook_service.emit_event(
+        principal.organization_id, "ticket.updated", payload, user_id=principal.user_id
+    )
+    if newly_resolved:
+        webhook_service.emit_event(
+            principal.organization_id, "ticket.resolved", payload, user_id=principal.user_id
+        )
     return out
 
 

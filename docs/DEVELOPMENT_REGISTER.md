@@ -122,21 +122,225 @@ NVD full backfill is the daily sync job, not a single run (one bounded
 (compose is code only); AWS/Cognito/staging still gated on
 infrastructure approval.
 
-## Phase 4 — Enterprise operations (PLANNED)
+## Sample-data removal (DONE, Nov 26, 2026)
+
+At the user's direction, all sample data was removed from the backend:
+`app/seed.py` and `scripts/seed_dev.py` deleted, the
+`NULL_SEED_DEV_FIXTURES` setting removed, live-boot scripts rewired to
+provision a real org through the public API from an empty database.
+Tests build their own data fresh in the test database via
+`tests/factories.py`. The `organizations.is_dev_fixture` column and API
+field stay in the schema/contract (always `false` now) — no migration
+was needed. Verified after removal: suite **236/236 passing** and live
+boot **33/33 checks** from a completely empty database (0 orgs/users/
+tickets/platform users before the boot created its own org via API).
+
+## Registration + onboarding + invitations (DONE, Nov 26, 2026)
+
+Priority insertion (user request Nov 25, 20:55 EST), built after the
+sample-data removal and before Phase 4. Migration 0013; **259/259
+tests passing** (23 new in `tests/test_registration.py`) and live boot
+**33/33 checks** from a completely empty database, now provisioning
+through `POST /api/v1/auth/register` instead of a direct DB insert.
+
+- **Organization registration** — public `POST /api/v1/auth/register`
+  (5/min): org name/email/website/industry/size + admin name/email/
+  password. Creates the org (auto-suffixed slug on collision),
+  the first admin, the owner membership, the Organization
+  Administrator grant, default settings, the three default
+  departments, and the onboarding record (profile complete), then
+  signs the admin in. 409 when the admin email already exists.
+  Registration **never** creates a platform administrator (verified:
+  org admin credentials get 401 on platform login).
+- **Multi-tenant testing** — register two orgs (NULL Demo Corporation,
+  Acme Technology Group) + Genesee Test Organization for switching;
+  tests prove cross-org reads 403/404, cross-org writes rejected, and
+  per-org ticket lists disjoint.
+- **Onboarding** — per-org progress (`org_onboarding`): profile →
+  departments → invite_technicians → service_desk →
+  business_hours_sla → assets_endpoints → finish. Skippable except
+  profile/finish; finishing requires the rest complete-or-skipped and
+  locks the record. Step data applies real effects (departments
+  created, service-desk settings merged, default business hours +
+  SLA policy created).
+- **Org switching** — existing `select-organization` /
+  `switch-organization` endpoints (server-side membership checks),
+  now covered by tests incl. switching to a non-member org → 403.
+- **Invitations, two separate workflows** — org (`/organizations/{id}/invitations`,
+  org roles only) and platform (`/platform/admin-invitations`,
+  platform roles only; only a Platform Super Admin may invite to the
+  Super Admin role). Single-use tokens, SHA-256 hashed, bound to
+  email + org, **48h expiry** (`invitation_days` 7 → 2). Resend
+  regenerates the token (old link dies); revoke blocks acceptance;
+  accept is audited (`invitation.accepted` + `membership.accepted`,
+  platform equivalents in the platform audit log). Public lookup
+  `GET /api/v1/auth/invitations/{token}` feeds the accept page
+  (name/email pre-filled and locked). MFA enrollment follows
+  acceptance via the existing Phase 1 endpoints.
+- **Local email** — no real email service, no spend. When SMTP is
+  unconfigured the backend writes invitation mail to the
+  `dev_email_outbox` table (org + platform scopes) and returns the
+  `accept_url` to the inviting admin in the create/resend response.
+  Read it via `GET /organizations/{id}/outbox` or
+  `GET /platform/outbox`. Full instructions in `docs/DEV_SETUP.md`.
+- **Fixes found while building this piece** — `users:read` did not
+  exist in the permission catalog (new GET endpoints would 403 for
+  everyone): added to the catalog + the five staff templates (Auditor
+  via `READ_PERMISSIONS`, Org Admin via `*`). Slug uniqueness checks
+  were RLS-blind at registration time (no org context → duplicate
+  slugs 500'd): new SECURITY DEFINER `org_slug_exists()`; same-name
+  orgs now get suffixed slugs, explicit slugs still 409.
+  `auth_get_invitation_by_token` was replaced (DROP + CREATE) to
+  return org name/slug, profile fields, and role names.
+
+## Real email delivery + remove technician (follow-ups, Nov 26, 2026)
+
+Extends the registration/invitation work. Migrations 0018 (delivery
+records + idempotency indexes) and 0019 (users RLS fix, below).
+**297/297 tests passing** (26 new in `tests/test_email_delivery.py`,
+12 new in `tests/test_member_removal.py`) and live boot **33/33
+checks** from a completely empty database.
+
+- **Real email delivery** — centralized service (`app/services/email.py`)
+  with a provider abstraction: `email_provider="none"` (dev outbox,
+  default) vs `"resend"` (real sends). `email_deliveries` table
+  records every attempt (provider message id, status, attempts,
+  error; rendered bodies stored so retries re-send identically).
+  Retries via Celery (`null.tasks.retry_email_delivery`, backoff 60s ×
+  2^n, max 3, never double-sends). Idempotency: API-level duplicate
+  rejection + partial unique indexes (one pending invitation per
+  (org, email)); stale pending rows retire to `expired` at invite
+  time. NULL-branded templates (ivory/ink/purple), subject exactly
+  "You've been invited to join NULL ITSM". Full detail in
+  `docs/EMAIL.md`.
+- **Resend key via surrogate (this VM)** — no key value exists
+  anywhere an agent can read it, so when `NULL_RESEND_API_KEY` is
+  unset the backend fetches a fresh `hsurr:` surrogate per send from
+  authd (`app/services/resend_surrogate.py`, credential
+  `custom.resend`) and sends it through the egress proxy, which swaps
+  it for the real key. Env key wins when set; neither → loud 503.
+  Transport: browser UA (Cloudflare 1010), explicit proxy with
+  `trust_env=False` (NO_PROXY `::1` parse bug), TLS verified against
+  the **system CA store** (httpx's certifi does not know the Hatch
+  egress CA — found live: default client fails every send with
+  `CERTIFICATE_VERIFY_FAILED`). **Verified end to end Nov 26, 2026:**
+  a real invitation reached `jamiah_mcq@yahoo.com` from the live boot
+  (Resend message id `01a215df-d718-7767-afab-955c0f0944ff`,
+  `delivery.status == "sent"`, accept link hidden). Receipt in the
+  Yahoo inbox + acceptance of that invitation are still open (token
+  relay from the email; the live DB is kept until then). Sender for
+  live sends is `onboarding@resend.dev` (no verified domain yet).
+- **Remove technician** — `POST /api/v1/organizations/{org_id}/members/{user_id}/remove`
+  (`users:manage`, optional `{"reason"}`). Deactivates the membership
+  (never a hard delete): user record + audit history preserved,
+  re-adding needs a fresh invitation. Access ends immediately (every
+  request re-checks for an active membership; revoked sessions cannot
+  refresh). Assigned assets go through the Phase 2 offboarding flow
+  (`offboard_user` with target `"deactivated"`): one recovery ticket
+  per asset, assets to `in_repair`. Pending invitations for the email
+  are cancelled. Guards: the org owner cannot be removed; the last
+  Organization Administrator cannot be removed (same invariant now
+  enforced on the PATCH status path too); an admin may remove
+  themselves when another admin remains. Audited as
+  `membership.removed` with actor/target/reason/report. Platform
+  users are removed via the existing suspend endpoint
+  (`PATCH /api/v1/platform/admins/{id}/suspend`, already tested) —
+  not duplicated.
+- **RLS fix found by the removal tests (migration 0019)** — the
+  `users_select` policy only showed a co-member while their
+  membership was `active`, so a suspended or removed member vanished
+  from Organization Users the moment their status changed. The policy
+  now shows co-members regardless of their status (the *caller* must
+  still be active). One existing test depended on the old hiding
+  (`test_rls_blocks_cross_org_user_read` asserted exactly 2 Acme
+  users); it now asserts the two fixture users are present and no
+  Globex users leak, which is the actual isolation property.
+- **Environment note (Nov 26, 2026)** — the VM was replaced and the
+  system PostgreSQL/Redis installs were wiped with it (home
+  persisted). Reinstalled from apt (PostgreSQL 16, Redis 7.0) and
+  started manually (`pg_ctlcluster 16 main start`,
+  `redis-server --daemonize yes`); there is no systemd here, so the
+  services do not auto-start after a restart. Port 8001 is held by
+  another agent's dev-mode server (DB `null_itsm_endpoint`); live
+  boots now run on port 8002 (`NULL_LIVE_BOOT_PORT`) and refuse to
+  test against a server they did not start.
+
+## Phase 4 — Enterprise operations (COMPLETE Nov 26, 2026; migrations 0014–0017; full suite 389/389 passing)
+
+Built in four workstreams (A workflows/automation, B forms/dashboards/reports,
+C webhooks/integrations/API keys, D GRC/releases/feature flags/status page/
+cross-module links) and integrated by the coordinator: all routers + models
+registered, audit literals centralized (68 constants in `app/audit.py`),
+`links:manage` added to the permission catalog (migration 0017 re-seeds it).
 
 | Feature | Tier | Status |
 |---|---|---|
-| Workflow designer + automation rules (execution history, retries, permissions) | Tier 2 | Planned |
-| Custom forms/fields/dashboards/reports, scheduled PDF/CSV/Excel exports | Tier 2 | Planned |
-| Webhooks + integrations framework (priority: Entra ID, Intune, Greenbone, Defender, Slack, Teams, GitHub, Power BI) | Tier 2 | Planned |
-| Cross-module linking (vuln → endpoint → ticket → patch → verification scan) | — | Planned |
-| Advanced reporting + custom dashboards | Tier 2 | Planned |
-| API developer portal (keys, docs, usage) | Tier 2 | Planned |
-| Release management + feature flags | Tier 2 | Planned |
-| Customer support + status page | Tier 2 | Planned |
-| GRC module (SOC 2 / ISO 27001 / NIST CSF / CIS mappings, evidence, ownership, assessments, exceptions) | — | Planned — **honesty rule: helps customers manage compliance; does NOT certify NULL** |
-| NULL Intelligence (AI-assisted ops; human approval required for consequential actions) | Tier 3 | Planned |
-| Predictive analytics, automated vuln correlation, cross-module remediation orchestration | Tier 3 | Planned |
+| Workflow designer + automation rules (versioning, execution history, retries) | Tier 2 | Done — ticket-scoped rules; no wait/branching/HTTP/sub-workflow steps |
+| Custom forms/fields/dashboards/reports, scheduled CSV exports | Tier 2 | Done — CSV works; `xlsx` is an honest 501 (`openpyxl` not installed) |
+| Webhooks + integrations framework (Entra ID, Intune, Greenbone, Defender, Slack, Teams, GitHub, Power BI) | Tier 2 | Done — generic-HTTP provider registry + real connection checks; no per-vendor drivers |
+| Cross-module linking (vuln → endpoint → ticket → patch → verification scan) | — | Done — allow-listed entity/link types, cross-org → 404 |
+| Advanced reporting + custom dashboards | Tier 2 | Done — real GROUP BY widget queries; scheduled reports email CSV on a 5-min sweep |
+| API developer portal (keys, docs, usage) | Tier 2 | Done — API keys (SHA-256 stored, shown once) authenticate via `X-Api-Key` in the main dependency chain; no usage metering yet |
+| Release management + feature flags | Tier 2 | Done — deterministic per-org bucket `sha256(org_id:key) % 100`; no per-user targeting |
+| Customer support + status page | Tier 2 | Done — public `GET /api/v1/status/public/{org_slug}`; no subscriber notifications or uptime history |
+| GRC module (SOC 2 / ISO 27001 / NIST CSF / CIS mappings, evidence, ownership, assessments, exceptions) | — | Done — control status is DERIVED only (exception → `exception`; latest assessment → `satisfied`/`failed`/`in_progress`; none → `not_assessed`). `satisfied` is a recorded assessment outcome, never a certification claim. No file upload for evidence. **Honesty rule: helps customers manage compliance; does NOT certify NULL** |
+| NULL Intelligence (AI-assisted ops; human approval required for consequential actions) | Tier 3 | Deferred to Phase 5 — DATA_MODEL puts `ai_suggestions` in Phase 5 |
+| Predictive analytics, automated vuln correlation, cross-module remediation orchestration | Tier 3 | Deferred |
+
+**Integration wiring (coordinator):**
+- Automation hooks: ticket create fires `ticket.created`, update fires
+  `ticket.updated` + `ticket.priority_changed` when the priority changed.
+  A bad rule never fails the ticket write (per-action errors are recorded
+  on the run as failed/partial).
+- **SLA sweep order (decision, Nov 26): detect → escalate → automate.**
+  `scan_breaches` only detects and returns `breached_ticket_ids`;
+  `scan_sla_breaches` (Celery, every 5 min) evaluates Phase 2 escalations
+  first, then fires `sla_breach` automation rules. Automation runs last
+  so an action that changes a ticket (e.g. set priority critical) cannot
+  defeat an escalation rule's conditions for the same breach.
+- Webhook emission: `emit_event` (post-commit, best-effort, never raises)
+  from ticket create/update/resolve, change create/approve, incident
+  declare, endpoint enroll, and vulnerability first-seen (`new_findings`
+  = freshly created findings only; re-imports do not re-emit). Delivery
+  is synchronous in-process (bounded by the 10s httpx timeout, max 3
+  attempts) — async delivery is a future improvement.
+- API-key auth: bearer token wins when present; otherwise `X-Api-Key`.
+  Key scopes are permission codes, so the same `require_permission`
+  gates apply. `X-Organization-Id`, when present, must match the key's
+  org (else 403). Endpoints that need a user identity (`/auth/me`,
+  logout, MFA, notifications list/read-all, `/organizations/mine`,
+  change approve/reject) reject API keys with 403 via
+  `get_user_principal`.
+- Scheduled reports: `run_scheduled_report` emails one CSV per
+  recipient (`<slug>-YYYYMMDD-HHMM.csv`, NULL-styled, template
+  `scheduled_report`, `retry=False` — the CSV bytes are not stored, so
+  a failed delivery is recorded in `email_deliveries` and the next run
+  re-sends; `last_status` reflects generation only). Sweep
+  (`null.tasks.sweep_scheduled_reports`, beat every 5 min) fires each
+  due schedule once per cron minute, using the (last run, now] window.
+- **Field encryption (deployment note):** webhook secrets and
+  integration credentials are Fernet-encrypted at rest under
+  `NULL_FIELD_ENCRYPTION_KEY` and creation fails closed without it.
+  The live-boot scripts generate a fresh dev key per run; see
+  `docs/DEV_SETUP.md` §2.
+- **Bug found live (Nov 26):** the patch handler's `new_findings` is an
+  INT count while the vuln handler's is a LIST of payloads; the agent
+  job-result endpoint iterated it unconditionally and 500'd on every
+  patch result (`TypeError: 'int' object is not iterable`). Fixed by
+  iterating only the list shape; regression test
+  `test_patch_job_result_still_accepted` covers it.
+
+**Verification (Nov 26, 2026):** full suite **389 passed** via the locked
+script (`bash scripts/run_tests_locked.sh -q`, ~84s) — 297 pre-Phase-4 +
+92 Phase 4 tests (75 workstream: A 24 + B 19 + C 19 + D 13; 17
+integration in `tests/test_phase4_integration.py`, incl. the
+patch-result regression test). Live boot **33/33**
+(`scripts/live_boot_check.py`, port 8002, fresh empty DB) plus a live
+Phase 4 smoke **19/19** (every new route exercised against the booted
+server: workflows, automation rules, forms, dashboards, reports +
+generate + schedule, webhooks, integrations, API keys + live key auth,
+GRC, releases, feature flags, status incidents + public page, OpenAPI
+523 operations across 351 paths, 528 routes total).
 
 ## Phase 5 — Commercial SaaS (PLANNED)
 

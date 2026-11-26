@@ -11,17 +11,20 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.database import as_uuid
-from app.deps import Unauthorized, get_db, get_principal
+from app.deps import Unauthorized, get_db, get_user_principal
 from app.models.platform import User
 from app.rate_limit import limiter
 from app.schemas import (
     AcceptInvitationRequest,
+    InvitationLookupOut,
     LoginRequest,
     LoginResponse,
     LogoutRequest,
     MfaChallengeRequest,
     MfaEnrollResponse,
     MfaVerifyRequest,
+    OrganizationRegisterOut,
+    OrganizationRegisterRequest,
     PasswordResetConfirm,
     PasswordResetRequest,
     RefreshRequest,
@@ -29,8 +32,8 @@ from app.schemas import (
     SwitchOrganizationRequest,
     TokenResponse,
 )
-from app.security import decode_local_token
-from app.services import auth_service
+from app.security import decode_local_token, hash_token
+from app.services import auth_service, registration_service
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
@@ -132,7 +135,7 @@ def refresh(request: Request, body: RefreshRequest, session: Session = Depends(g
 
 
 @router.post("/logout")
-def logout(body: LogoutRequest, session: Session = Depends(get_db), principal=Depends(get_principal)):
+def logout(body: LogoutRequest, session: Session = Depends(get_db), principal=Depends(get_user_principal)):
     auth_service.logout(session, body.refresh_token, principal.user_id, principal.organization_id)
     session.commit()
     return {"status": "ok"}
@@ -157,6 +160,84 @@ def confirm_password_reset(body: PasswordResetConfirm, session: Session = Depend
     return {"status": "ok"}
 
 
+@router.post("/register", response_model=OrganizationRegisterOut, status_code=status.HTTP_201_CREATED)
+@limiter.limit("5/minute")
+def register_organization(request: Request, body: OrganizationRegisterRequest, session: Session = Depends(get_db)):
+    """Public organization registration. Creates the org, its first
+    administrator, the owner membership, the Organization Administrator
+    role grant, default settings + departments, and the onboarding
+    record, then signs the admin in. Registration NEVER creates a
+    platform administrator. The admin email must be new: an existing
+    account signs in and creates another org via the authenticated
+    endpoint instead."""
+    from app.routers.organizations import _org_out
+
+    try:
+        org, admin = registration_service.register_organization(
+            session,
+            org_name=body.org_name,
+            org_email=body.org_email,
+            website=body.website,
+            industry=body.industry,
+            org_size=body.org_size,
+            admin_name=body.admin_name,
+            admin_email=body.admin_email,
+            password=body.password,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    session.flush()
+    result = auth_service.login(
+        session, body.admin_email, body.password, _client_ip(request), _user_agent(request)
+    )
+    if result.status != "ok" or result.access_token is None or result.refresh_token is None:
+        # A freshly registered admin has one membership and no MFA, so
+        # login must return tokens; anything else is a server error.
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Registration completed but sign-in failed",
+        )
+    session.commit()
+    login_response = _to_login_response(result)
+    return OrganizationRegisterOut(
+        organization=_org_out(org),
+        user_id=admin.id,
+        access_token=login_response.access_token,
+        refresh_token=login_response.refresh_token,
+    )
+
+
+@router.get("/invitations/{token}", response_model=InvitationLookupOut)
+def lookup_invitation(token: str, session: Session = Depends(get_db)):
+    """Public invitation lookup for the accept page: org, pre-filled
+    name/email (locked on the page), and assigned roles. The token hash
+    is resolved through the SECURITY DEFINER function; no account data
+    beyond the invitation itself is exposed."""
+    from sqlalchemy import text
+
+    row = (
+        session.execute(
+            text("SELECT * FROM auth_get_invitation_by_token(:h)"), {"h": hash_token(token)}
+        )
+        .mappings()
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invitation not found")
+    return InvitationLookupOut(
+        organization_name=row["organization_name"],
+        organization_slug=row["organization_slug"],
+        email=row["email"],
+        full_name=row["full_name"] or "",
+        department=row["department"] or "",
+        team=row["team"] or "",
+        roles=list(row["roles"] or []),
+        status=row["status"],
+        expires_at=row["expires_at"],
+    )
+
+
 @router.post("/invitations/accept")
 def accept_invitation(body: AcceptInvitationRequest, session: Session = Depends(get_db)):
     try:
@@ -171,7 +252,7 @@ def accept_invitation(body: AcceptInvitationRequest, session: Session = Depends(
 
 
 @router.post("/mfa/enroll", response_model=MfaEnrollResponse)
-def enroll_mfa(session: Session = Depends(get_db), principal=Depends(get_principal)):
+def enroll_mfa(session: Session = Depends(get_db), principal=Depends(get_user_principal)):
     user = session.get(User, principal.user_id)
     if user is None:
         raise Unauthorized("User not found")
@@ -181,7 +262,9 @@ def enroll_mfa(session: Session = Depends(get_db), principal=Depends(get_princip
 
 
 @router.post("/mfa/verify-enrollment")
-def verify_mfa_enrollment(body: MfaVerifyRequest, session: Session = Depends(get_db), principal=Depends(get_principal)):
+def verify_mfa_enrollment(
+    body: MfaVerifyRequest, session: Session = Depends(get_db), principal=Depends(get_user_principal)
+):
     user = session.get(User, principal.user_id)
     if user is None:
         raise Unauthorized("User not found")
@@ -192,7 +275,7 @@ def verify_mfa_enrollment(body: MfaVerifyRequest, session: Session = Depends(get
 
 
 @router.post("/mfa/disable")
-def disable_mfa(session: Session = Depends(get_db), principal=Depends(get_principal)):
+def disable_mfa(session: Session = Depends(get_db), principal=Depends(get_user_principal)):
     user = session.get(User, principal.user_id)
     if user is None:
         raise Unauthorized("User not found")
@@ -202,7 +285,7 @@ def disable_mfa(session: Session = Depends(get_db), principal=Depends(get_princi
 
 
 @router.get("/me")
-def me(principal=Depends(get_principal)):
+def me(principal=Depends(get_user_principal)):
     return {
         "user_id": str(principal.user_id),
         "email": principal.email,

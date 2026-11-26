@@ -21,6 +21,7 @@ import uuid
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import audit as audit_mod
@@ -31,7 +32,9 @@ from app.deps import (
     get_platform_principal,
     require_platform_permission,
 )
+from app.models.email import EmailDelivery
 from app.models.platform_admin import PlatformUser
+from app.models.registration import DevEmailOutbox
 from app.permissions import PLATFORM_PERMISSIONS
 from app.rate_limit import limiter
 from app.schemas import (
@@ -42,8 +45,12 @@ from app.schemas import (
     MfaChallengeRequest,
     MfaEnrollResponse,
     MfaVerifyRequest,
+    OutboxOut,
     PermissionOut,
     PlatformAuditLogOut,
+    PlatformInvitationAcceptRequest,
+    PlatformInvitationOut,
+    PlatformInviteRequest,
     PlatformUserCreate,
     PlatformUserOut,
     RefreshRequest,
@@ -57,6 +64,7 @@ from app.schemas import (
     TenantUserOut,
     TokenResponse,
 )
+from app.services import email as email_service
 from app.services import platform_service
 
 router = APIRouter(prefix="/api/v1/platform", tags=["platform"])
@@ -237,6 +245,21 @@ def platform_me(principal: PlatformPrincipal = Depends(get_platform_principal)):
     }
 
 
+@router.post("/auth/invitations/accept")
+def accept_platform_invitation(
+    body: PlatformInvitationAcceptRequest, session: Session = Depends(get_db)
+):
+    """Public platform-invitation acceptance: creates the platform
+    administrator with the role fixed at invite time. Single-use,
+    email-bound, 48h expiry. This never touches any organization."""
+    try:
+        user = platform_service.accept_platform_invitation(session, body.token, body.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    session.commit()
+    return {"status": "ok", "platform_user_id": str(user.id), "email": user.email}
+
+
 # --- Permission catalog ------------------------------------------------------
 
 
@@ -274,6 +297,158 @@ def create_platform_admin(
     out = _platform_user_out(session, user)
     session.commit()
     return out
+
+
+# --- Platform invitations -----------------------------------------------------
+# Invite internal NULL personnel into platform administration. This is a
+# SEPARATE workflow from org invitations: different table, different
+# roles, different authorization — an org invitation can never create a
+# platform admin, and a platform invitation never touches an org.
+
+
+def _platform_invitation_out(
+    invitation, role_name: str = "", accept_url: str | None = None, delivery: dict | None = None
+) -> PlatformInvitationOut:
+    return PlatformInvitationOut(
+        id=invitation.id,
+        email=invitation.email,
+        full_name=invitation.full_name,
+        role_id=invitation.role_id,
+        role_name=role_name,
+        status=invitation.status,
+        expires_at=invitation.expires_at,
+        created_at=invitation.created_at,
+        accept_url=accept_url,
+        delivery=delivery,
+    )
+
+
+def _delivery_row_dict(session: Session, result) -> dict | None:
+    """Delivery dict for a just-completed send, from its recorded row."""
+    if result is None or result.delivery_id is None:
+        return None
+    row = session.get(EmailDelivery, uuid.UUID(result.delivery_id))
+    return email_service.delivery_to_dict(row)
+
+
+def _accept_url_if_dev(accept_url: str | None) -> str | None:
+    """The accept link is returned only in dev mode (no provider
+    configured). When a provider is configured the email is the delivery
+    channel and no link is exposed."""
+    return accept_url if not email_service.email_delivery_configured() else None
+
+
+@router.post("/admin-invitations", response_model=PlatformInvitationOut, status_code=status.HTTP_201_CREATED)
+def invite_platform_admin(
+    body: PlatformInviteRequest,
+    session: Session = Depends(get_db),
+    principal: PlatformPrincipal = Depends(require_platform_permission("platform:users:manage")),
+):
+    role = _get_platform_role_or_404(session, body.role_id)
+    try:
+        invitation, _token, accept_url, delivery = platform_service.invite_platform_admin(
+            session, principal, body.email, body.full_name, body.role_id
+        )
+    except email_service.EmailConfigurationError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    out = _platform_invitation_out(
+        invitation,
+        role_name=role.name,
+        accept_url=_accept_url_if_dev(accept_url),
+        delivery=_delivery_row_dict(session, delivery),
+    )
+    session.commit()
+    return out
+
+
+@router.get("/admin-invitations", response_model=list[PlatformInvitationOut])
+def list_platform_invitations(
+    session: Session = Depends(get_db),
+    principal: PlatformPrincipal = Depends(require_platform_permission("platform:users:manage")),
+):
+    rows = platform_service.list_platform_invitations(session)
+    out = []
+    for row in rows:
+        role = platform_service.get_platform_role(session, row.role_id)
+        out.append(
+            _platform_invitation_out(
+                row,
+                role_name=role.name if role else "",
+                delivery=email_service.delivery_to_dict(
+                    email_service.latest_delivery_for_invitation(session, platform_invitation_id=row.id)
+                ),
+            )
+        )
+    return out
+
+
+@router.post("/admin-invitations/{invitation_id}/resend", response_model=PlatformInvitationOut)
+def resend_platform_invitation(
+    invitation_id: uuid.UUID,
+    session: Session = Depends(get_db),
+    principal: PlatformPrincipal = Depends(require_platform_permission("platform:users:manage")),
+):
+    try:
+        invitation, _token, accept_url, delivery = platform_service.resend_platform_invitation(
+            session, principal, invitation_id
+        )
+    except email_service.EmailConfigurationError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    role = platform_service.get_platform_role(session, invitation.role_id)
+    out = _platform_invitation_out(
+        invitation,
+        role_name=role.name if role else "",
+        accept_url=_accept_url_if_dev(accept_url),
+        delivery=_delivery_row_dict(session, delivery),
+    )
+    session.commit()
+    return out
+
+
+@router.post("/admin-invitations/{invitation_id}/revoke")
+def revoke_platform_invitation(
+    invitation_id: uuid.UUID,
+    session: Session = Depends(get_db),
+    principal: PlatformPrincipal = Depends(require_platform_permission("platform:users:manage")),
+):
+    try:
+        platform_service.revoke_platform_invitation(session, principal, invitation_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    session.commit()
+    return {"status": "ok"}
+
+
+@router.get("/outbox", response_model=list[OutboxOut])
+def list_platform_outbox(
+    session: Session = Depends(get_db),
+    principal: PlatformPrincipal = Depends(require_platform_permission("platform:users:manage")),
+):
+    """Read the platform dev outbox: every platform invitation email the
+    backend would have sent (SMTP unconfigured in local dev)."""
+    rows = session.execute(
+        select(DevEmailOutbox)
+        .where(DevEmailOutbox.scope == "platform")
+        .order_by(DevEmailOutbox.created_at.desc())
+    ).scalars()
+    return [
+        OutboxOut(
+            id=r.id,
+            organization_id=r.organization_id,
+            scope=r.scope,
+            to_email=r.to_email,
+            subject=r.subject,
+            body=r.body,
+            created_at=r.created_at,
+        )
+        for r in rows
+    ]
 
 
 @router.get("/admins/{user_id}", response_model=PlatformUserOut)

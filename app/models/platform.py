@@ -33,11 +33,18 @@ class Organization(Base):
     id: Mapped[uuid.UUID] = uuid_pk()
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     slug: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)
+    # Registration profile (collected at public registration; all optional
+    # after creation except the contact email).
+    contact_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    website: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    industry: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # 1-10 | 11-50 | 51-200 | 201-1000 | 1000+
+    size: Mapped[str | None] = mapped_column(String(20), nullable=True)
     # Free-form org settings (branding, timezone, defaults). JSONB in the DB.
     settings: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
-    # DEV FIXTURE marker: True only for seeded test organizations. Production
-    # organizations are always False. Used to clearly separate fixtures.
+    # Marker retained for API compatibility; always False since the
+    # sample-data removal (Nov 26, 2026) — no fixtures exist.
     is_dev_fixture: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     # The user who created the organization. Recorded so the creator can
     # read the row back immediately: INSERT ... RETURNING is checked against

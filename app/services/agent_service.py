@@ -126,11 +126,11 @@ def pending_jobs_count(session: Session, endpoint_id: uuid.UUID) -> int:
 def dispatch_job_result(session: Session, org_id: uuid.UUID, job) -> bool:
     """Dispatch a closed job's result to its registered handler.
 
-    Returns True when a handler ran, False when the job type has no
-    handler, the handler module has not landed yet, or the handler
-    itself failed. The device's result is ground truth and is already
-    recorded before this runs: a failing downstream apply must NOT roll
-    it back, so handler exceptions are audited
+    Returns the handler's return value when a handler ran, False when
+    the job type has no handler, the handler module has not landed yet,
+    or the handler itself failed. The device's result is ground truth
+    and is already recorded before this runs: a failing downstream
+    apply must NOT roll it back, so handler exceptions are audited
     (``agent.job_result_handler_failed``) and swallowed — the apply
     functions are idempotent, so the result can be re-applied later.
     Only the not-landed-yet case writes ``agent.job_result_unapplied``.
@@ -155,7 +155,7 @@ def dispatch_job_result(session: Session, org_id: uuid.UUID, job) -> bool:
         )
         return False
     try:
-        handler(session, org_id, job)
+        return handler(session, org_id, job)
     except Exception as exc:  # noqa: BLE001 — the result must survive a bad apply.
         audit_mod.write_audit(
             session,
@@ -168,7 +168,6 @@ def dispatch_job_result(session: Session, org_id: uuid.UUID, job) -> bool:
             metadata={"job_type": job.type, "handler": target, "error": str(exc)},
         )
         return False
-    return True
 
 
 def serialize_job_output(output) -> str | None:
