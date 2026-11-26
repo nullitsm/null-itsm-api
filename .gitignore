@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment & secrets — NEVER commit real credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local dev data
+*.sqlite3
+*.log
+/tmp/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Terraform
+infra/terraform/**/.terraform/
+infra/terraform/**/*.tfstate
+infra/terraform/**/*.tfstate.backup
+infra/terraform/**/*.tfplan

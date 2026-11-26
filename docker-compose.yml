@@ -1,0 +1,74 @@
+# NULL ITSM — local development stack (Docker).
+# Usage:  docker compose up --build
+# The API runs migrations on start and serves on http://localhost:8000.
+# Dev fixtures are seeded when NULL_SEED_DEV_FIXTURES=true (default here).
+# ALL credentials in this file are DEVELOPMENT ONLY.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: dev_postgres_password
+      POSTGRES_DB: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    environment:
+      NULL_ENV: development
+      NULL_DEBUG: "true"
+      NULL_JWT_SECRET: dev-only-jwt-secret-change-me-in-production
+      NULL_DATABASE_URL: postgresql+psycopg://null_app:dev_app_password@db:5432/null_itsm
+      NULL_DATABASE_OWNER_URL: postgresql+psycopg://null_owner:dev_owner_password@db:5432/null_itsm
+      NULL_REDIS_URL: redis://redis:6379/0
+      NULL_CELERY_BROKER_URL: redis://redis:6379/1
+      NULL_CELERY_RESULT_BACKEND: redis://redis:6379/2
+      NULL_SEED_DEV_FIXTURES: "true"
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+  worker:
+    build: .
+    environment:
+      NULL_ENV: development
+      NULL_JWT_SECRET: dev-only-jwt-secret-change-me-in-production
+      NULL_DATABASE_URL: postgresql+psycopg://null_app:dev_app_password@db:5432/null_itsm
+      NULL_DATABASE_OWNER_URL: postgresql+psycopg://null_owner:dev_owner_password@db:5432/null_itsm
+      NULL_REDIS_URL: redis://redis:6379/0
+      NULL_CELERY_BROKER_URL: redis://redis:6379/1
+      NULL_CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ["celery", "-A", "app.tasks.celery_app.celery_app", "worker", "--loglevel=info"]
+
+volumes:
+  pgdata:

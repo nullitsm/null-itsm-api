@@ -1,0 +1,33 @@
+# Example variables for the NULL ITSM API staging environment.
+#
+# Copy to terraform.tfvars and fill in REAL values. terraform.tfvars is
+# git-ignored and must NEVER be committed — it contains secrets.
+#   cp terraform.tfvars.example terraform.tfvars
+#
+# Sensitive values can also be passed as environment variables instead:
+#   export TF_VAR_db_password='...'
+#   export TF_VAR_jwt_secret='...'
+
+project     = "null-itsm"
+environment = "staging"
+aws_region  = "us-east-1"
+
+# --- TLS ---
+# ARN of an existing ACM certificate in us-east-1 covering the staging
+# domain (request/validate it in the AWS console first).
+acm_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/00000000-0000-0000-0000-000000000000"
+domain_name         = "staging.example.com"
+
+# --- Cognito ---
+cognito_domain_prefix = "null-itsm-staging"
+
+# --- Database (supplied at deploy time; use a strong generated password) ---
+db_name     = "null_itsm"
+db_username = "null_owner"
+db_password = "REPLACE-ME-WITH-A-STRONG-GENERATED-PASSWORD"
+
+# --- App secret (supplied at deploy time; generate with e.g. openssl rand -hex 32) ---
+jwt_secret = "REPLACE-ME-WITH-A-RANDOM-256-BIT-SECRET"
+
+# --- Alarms ---
+alarm_notification_email = "you@example.com"
